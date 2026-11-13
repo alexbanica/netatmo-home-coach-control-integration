@@ -85,7 +85,7 @@ recovery behavior, and safe local operation.
 
 ## Docker, CI, and publication
 
-The root `Dockerfile` builds with the pinned Node 24 Bookworm-slim image and
+The root `Dockerfile` builds with the pinned Node 24 Alpine image and
 locked dependencies, then runs compiled `dist/` with production dependencies
 as the non-root `node` user. `.dockerignore` is an allowlist: preserve required
 package manifests, `tsconfig.json`, and `src/`; do not send tests, local config,
@@ -95,7 +95,7 @@ Ordinary GitHub Actions CI validates pull requests and pushes to `main` and the
 feature branch; it installs locked dependencies and runs `check`, `test`, and
 `build`. The separate Forgejo publisher is tag-push-only, guarded, and targets
 native ARM64. It validates the tag, runs the same checks/build before registry
-login, pushes versioned and `latest-node24-bookworm-slim` images, checks matching
+login, pushes versioned and `latest-node24-alpine` images, checks matching
 push receipts/digests, and removes temporary Docker credentials. Repository
 secret names are `FORGEJO_REGISTRY_USERNAME` and
 `FORGEJO_REGISTRY_TOKEN`; never read, print, or record their values.
