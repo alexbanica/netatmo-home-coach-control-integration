@@ -1,46 +1,57 @@
 import { CookieJar } from "tough-cookie";
+import type { HttpClient, HttpRequestOptions, HttpResponse } from "../http/HttpClient.js";
+import { HttpError } from "../http/HttpError.js";
+import { WebSessionError } from "./WebSessionError.js";
 
-const ALLOWED_HOSTS = new Set(["auth.netatmo.com", "my.netatmo.com", "app.netatmo.net"]);
+const ALLOWED_HOSTS = ["auth.netatmo.com", "my.netatmo.com", "app.netatmo.net"] as const;
+const ALLOWED_HOST_SET: ReadonlySet<string> = new Set(ALLOWED_HOSTS);
 const AUTH_ORIGIN = "https://auth.netatmo.com";
 const USER_AGENT = "netatmo-home";
 
-export class WebSessionError extends Error {
-  constructor(message, code = "WEB_SESSION_INVALID", { status, retryAfterMs } = {}) {
-    super(message);
-    this.name = "WebSessionError";
-    this.code = code;
-    if (status === 429) this.status = 429;
-    if (Number.isFinite(retryAfterMs) && retryAfterMs >= 0) this.retryAfterMs = retryAfterMs;
-  }
-}
+type LoginOptions = { signal?: AbortSignal };
+type WebRequestOptions = Omit<HttpRequestOptions, "allowedHosts" | "redirect" | "headers"> & {
+  headers?: Record<string, string>;
+};
+export type VerifyAccessToken = (token: string, options?: LoginOptions) => Promise<void>;
+export type WebSessionOptions = {
+  httpClient: HttpClient;
+  username: string;
+  password: string;
+  verifyAccessToken?: VerifyAccessToken;
+};
 
-function safeUrl(value) {
+function safeUrl(value: string | URL): URL {
   const url = new URL(value);
-  if (url.protocol !== "https:" || !ALLOWED_HOSTS.has(url.hostname) || url.username || url.password || (url.port && url.port !== "443")) {
+  if (url.protocol !== "https:" || !ALLOWED_HOST_SET.has(url.hostname) || url.username || url.password || (url.port && url.port !== "443")) {
     throw new WebSessionError("Web authentication redirect host is not permitted", "REDIRECT_REJECTED");
   }
   return url;
 }
 
-function getSetCookies(headers) {
+function getSetCookies(headers: Headers): string[] {
   if (typeof headers.getSetCookie === "function") return headers.getSetCookie();
   const value = headers.get("set-cookie");
   return value ? [value] : [];
 }
 
+function isRateLimited(error: unknown): error is HttpError & { status: 429; retryAfterMs?: number } {
+  if (!(error instanceof HttpError)) return false;
+  return error.status === 429;
+}
+
 /** Direct Netatmo web login. Cookies and access tokens live only in this instance. */
 export class WebSession {
-  #http;
-  #username;
-  #password;
-  #jar;
-  #token;
+  #http: HttpClient;
+  #username: string;
+  #password: string;
+  #jar: CookieJar;
+  #token: string | undefined;
   #attempted = false;
   #invalidated = false;
   #verified = false;
-  #verify;
+  #verify: VerifyAccessToken | undefined;
 
-  constructor({ httpClient, username, password, verifyAccessToken } = {}) {
+  constructor({ httpClient, username, password, verifyAccessToken }: WebSessionOptions) {
     if (!httpClient?.request) throw new TypeError("httpClient.request is required");
     if (!username || !password) throw new TypeError("Web-session username and password are required");
     this.#http = httpClient;
@@ -51,14 +62,14 @@ export class WebSession {
   }
 
   /** Starts an authentication cycle. At most one password login is allowed per cycle. */
-  beginCycle() {
+  beginCycle(): void {
     if (this.#invalidated) this.#token = undefined;
     this.#attempted = false;
     this.#invalidated = false;
     this.#verified = false;
   }
 
-  invalidate() {
+  invalidate(): boolean {
     if (this.#invalidated) return false;
     this.#token = undefined;
     this.#verified = false;
@@ -66,7 +77,7 @@ export class WebSession {
     return true;
   }
 
-  async getAccessToken({ signal } = {}) {
+  async getAccessToken({ signal }: LoginOptions = {}): Promise<string> {
     if (this.#token && !this.#invalidated) {
       if (!this.#verified && this.#verify) {
         await this.#verify(this.#token, { signal });
@@ -83,11 +94,11 @@ export class WebSession {
     return this.#token;
   }
 
-  async #request(startUrl, { method = "GET", headers = {}, body, signal } = {}) {
+  async #request(startUrl: string | URL, { method = "GET", headers = {}, body, signal }: WebRequestOptions = {}): Promise<HttpResponse> {
     let url = safeUrl(startUrl);
     let currentMethod = method;
     let currentBody = body;
-    const currentHeaders = { "user-agent": USER_AGENT, ...headers };
+    const currentHeaders: Record<string, string> = { "user-agent": USER_AGENT, ...headers };
     for (let hops = 0; hops <= 10; hops += 1) {
       if (currentMethod.toUpperCase() === "POST" && url.origin !== AUTH_ORIGIN) {
         throw new WebSessionError("Refusing to submit login credentials outside auth.netatmo.com", "REDIRECT_REJECTED");
@@ -96,7 +107,7 @@ export class WebSession {
       const requestHeaders = { ...currentHeaders };
       if (cookie) requestHeaders.cookie = cookie;
       else delete requestHeaders.cookie;
-      let response;
+      let response: HttpResponse;
       try {
         response = await this.#http.request(url.href, {
           method: currentMethod,
@@ -106,11 +117,11 @@ export class WebSession {
           allowedHosts: [...ALLOWED_HOSTS],
           redirect: "manual"
         });
-      } catch (error) {
-        if (error?.status === 429) {
+      } catch (error: unknown) {
+        if (isRateLimited(error)) {
           throw new WebSessionError("Netatmo authentication request was rate limited", "WEB_RATE_LIMITED", {
             status: 429,
-            retryAfterMs: error?.retryAfterMs
+            retryAfterMs: error.retryAfterMs
           });
         }
         throw new WebSessionError("Netatmo authentication request failed", "WEB_TRANSPORT_ERROR");
@@ -122,7 +133,7 @@ export class WebSession {
       const location = response.headers.get("location");
       if (!location) throw new WebSessionError("Authentication redirect has no location", "REDIRECT_INVALID");
       if (hops === 10) throw new WebSessionError("Too many authentication redirects", "REDIRECT_LIMIT");
-      const next = safeUrl(new URL(location, url).href);
+      const next = safeUrl(new URL(location, url));
       const crossOrigin = next.origin !== url.origin;
       if (crossOrigin && [307, 308].includes(response.status) && currentBody !== undefined) {
         throw new WebSessionError("Refusing to forward an authentication request body across origins", "REDIRECT_REJECTED");
@@ -143,7 +154,7 @@ export class WebSession {
     throw new WebSessionError("Authentication redirect limit exceeded", "REDIRECT_LIMIT");
   }
 
-  async #login(signal) {
+  async #login(signal?: AbortSignal): Promise<string> {
     this.#jar = new CookieJar();
     let response = await this.#request(`${AUTH_ORIGIN}/en-us/access/login`, { signal });
     if (response.status < 200 || response.status >= 400) throw new WebSessionError("Could not load Netatmo login page");
@@ -152,8 +163,11 @@ export class WebSession {
 
     response = await this.#request(`${AUTH_ORIGIN}/access/csrf`, { signal });
     if (response.status !== 200) throw new WebSessionError("Could not retrieve Netatmo login token");
-    let csrf;
-    try { csrf = JSON.parse(response.text).token; } catch { /* handled below */ }
+    let csrf: string | undefined;
+    try {
+      const parsed: unknown = JSON.parse(response.text);
+      if (typeof parsed === "object" && parsed !== null && "token" in parsed && typeof parsed.token === "string") csrf = parsed.token;
+    } catch { /* handled below */ }
     if (typeof csrf !== "string" || csrf.length === 0) throw new WebSessionError("Netatmo login token response was invalid");
 
     const form = new URLSearchParams({ email: this.#username, password: this.#password, stay_logged: "on", _token: csrf });
@@ -180,7 +194,7 @@ export class WebSession {
     throw new WebSessionError("Netatmo login did not produce an access token");
   }
 
-  #hasChallenge(text) {
-    return /captcha\s+(?:required|challenge)|multi.factor authentication|two.factor authentication|verification code required|challenge required/i.test(String(text));
+  #hasChallenge(text: string): boolean {
+    return /captcha\s+(?:required|challenge)|multi.factor authentication|two.factor authentication|verification code required|challenge required/i.test(text);
   }
 }

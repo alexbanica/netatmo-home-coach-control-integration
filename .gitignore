@@ -151,3 +151,7 @@ vite.config.ts.timestamp-*
 # Local runtime configuration and credentials
 config.json
 .env.local
+
+# TypeScript build output
+dist/
+*.tsbuildinfo

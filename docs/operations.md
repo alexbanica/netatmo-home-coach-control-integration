@@ -142,6 +142,14 @@ starts one cycle immediately, then waits after each completed cycle. It does
 not overlap cycles. Run only one service instance for a given configuration;
 distributed locking is not implemented.
 
+For development, `npm run dev` watches and runs `src/main.ts` through `tsx`,
+but does not load `.env.local`; provide environment variables through your
+shell or another local process manager. To start the compiled application
+directly, first run `npm run build`, then `npm start`. The `start:local` command
+also builds before starting and loads `.env.local` when that file exists.
+`npm run check` runs lint and strict source/test type-checking without emitting
+files; `npm test` runs the domain and application business-rule unit suite.
+
 ## Reading checks and calibration limits
 
 The Home Coach source must have a finite temperature and valid timestamp. By
@@ -203,10 +211,13 @@ docker --context default build --tag netatmo-homecoach:local .
 ```
 
 `--context default` selects the local Docker daemon, even if another context is
-configured as the host default. The image uses the locked production
-dependencies, runs as the non-root `node` user and starts `node src/index.js`
-in the foreground. It contains no runtime configuration or credentials. No
-writable application volume is needed.
+configured as the host default. The Dockerfile uses the same digest-pinned
+Node 24.21 Bookworm-slim base for builder and runtime stages. It compiles the
+TypeScript application in the builder, then packages the compiled `dist/`
+output with locked production dependencies. The image runs as the non-root
+`node` user and starts `node dist/main.js` in the foreground. It contains no
+runtime configuration or credentials. No writable application volume is
+needed.
 
 After creating and reviewing private `.env.local` and `config.json`, start
 with the environment file and a read-only config bind mount:
@@ -228,17 +239,19 @@ non-root UID 1000. Run one container for each configuration.
 
 GitHub Actions validation runs on pull requests and pushes to `main` and
 `feature/netatmo-homecoach-true-temperature`. It installs locked dependencies,
-runs the source check and the 12 business-rule unit cases. These tests do not
-exercise infrastructure, authentication, HTTP, scheduling or container
+runs ESLint and strict source/test type-checking, runs the 19 domain and
+application business-rule unit cases, and compiles the application. These tests
+do not exercise infrastructure, authentication, HTTP, scheduling or container
 execution. Validation uses no Netatmo account credentials and makes no live API
 calls. Ordinary CI does not build or publish a container image and does not
 deploy the service.
 
-The same source and business unit checks are:
+The local equivalents are:
 
 ```sh
 npm run check
 npm test
+npm run build
 ```
 
 These checks do not satisfy live A5 acceptance or demonstrate physical
@@ -249,7 +262,7 @@ heating behavior.
 The separate `.github/workflows/publish-docker-images.yml` workflow runs only
 for non-deleted Git tag push events. It checks out the tagged commit, validates
 the tag before dependency installation or registry login, then runs `npm ci`,
-`npm run check`, and `npm test` before building or pushing. It does not run for
+`npm run check`, `npm test`, and `npm run build` before building or pushing. It does not run for
 pull requests, branch pushes (including `main`), or manual dispatch. It does
 not create release tags or deploy the service.
 

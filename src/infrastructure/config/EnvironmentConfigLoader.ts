@@ -1,10 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { ServiceConfigurationInterface, ServiceCredentials, ServiceMapping } from "../../shared/config/ServiceConfigurationInterface.js";
 
 const DEFAULT_SYNC_INTERVAL_MINUTES = 5;
 const DEFAULT_MAX_READING_AGE_MINUTES = 15;
 
-function positiveInteger(value, name, fallback) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function positiveInteger(value: string | undefined, name: string, fallback: number): number {
   if (value === undefined) return fallback;
   if (!/^[1-9]\d*$/.test(value)) {
     throw new Error(`${name} must be a positive integer`);
@@ -14,7 +19,7 @@ function positiveInteger(value, name, fallback) {
   return number;
 }
 
-function required(env, key) {
+function required(env: NodeJS.ProcessEnv, key: string): string {
   const value = env[key];
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`Missing required environment variable: ${key}`);
@@ -22,23 +27,19 @@ function required(env, key) {
   return value;
 }
 
-function parseMappings(document) {
-  if (!document || typeof document !== "object" || Array.isArray(document)) {
-    throw new Error("Configuration must be a JSON object");
-  }
-  const keys = Object.keys(document);
-  if (keys.some((key) => key !== "mappings")) throw new Error("Configuration contains unknown keys");
-  if (!Array.isArray(document.mappings) || document.mappings.length === 0) {
+function parseMappings(document: unknown): readonly ServiceMapping[] {
+  if (!isRecord(document)) throw new Error("Configuration must be a JSON object");
+  if (Object.keys(document).some((key) => key !== "mappings")) throw new Error("Configuration contains unknown keys");
+  const entries = document.mappings;
+  if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error("Configuration mappings must be a nonempty array");
   }
-  const targets = new Set();
-  return document.mappings.map((mapping, index) => {
-    if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) {
-      throw new Error(`Mapping ${index + 1} must be an object`);
-    }
-    const mappingKeys = Object.keys(mapping);
-    const expected = ["sourceDeviceName", "targetHomeName", "targetRoomName"];
-    if (mappingKeys.length !== expected.length || expected.some((key) => !mappingKeys.includes(key))) {
+  const targets = new Set<string>();
+  const mappings = entries.map((mapping, index): ServiceMapping => {
+    if (!isRecord(mapping)) throw new Error(`Mapping ${index + 1} must be an object`);
+    const expected = ["sourceDeviceName", "targetHomeName", "targetRoomName"] as const;
+    const keys = Object.keys(mapping);
+    if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) {
       throw new Error(`Mapping ${index + 1} must contain only sourceDeviceName, targetHomeName and targetRoomName`);
     }
     for (const key of expected) {
@@ -46,27 +47,36 @@ function parseMappings(document) {
         throw new Error(`Mapping ${index + 1} requires a nonempty ${key}`);
       }
     }
-    const target = JSON.stringify([mapping.targetHomeName, mapping.targetRoomName]);
+    const sourceDeviceName = mapping.sourceDeviceName as string;
+    const targetHomeName = mapping.targetHomeName as string;
+    const targetRoomName = mapping.targetRoomName as string;
+    const target = JSON.stringify([targetHomeName, targetRoomName]);
     if (targets.has(target)) throw new Error(`Duplicate target in mapping ${index + 1}`);
     targets.add(target);
-    return Object.freeze({ ...mapping });
+    return Object.freeze({ sourceDeviceName, targetHomeName, targetRoomName });
   });
+  return Object.freeze(mappings);
+}
+
+export interface EnvironmentConfigLoadOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly cwd?: string;
 }
 
 /** Load and validate all configuration before callers perform any network work.
  * Returns secrets separately from public runtime settings; never logs this object.
  */
-export async function loadConfig({ env = process.env, cwd = process.cwd() } = {}) {
+export async function loadConfig({ env = process.env, cwd = process.cwd() }: EnvironmentConfigLoadOptions = {}): Promise<ServiceConfigurationInterface> {
   const configPath = resolve(cwd, env.CONFIG_FILE || "./config.json");
-  let raw;
+  let raw: string;
   try {
     raw = await readFile(configPath, "utf8");
   } catch {
     throw new Error(`Unable to read configuration file: ${configPath}`);
   }
-  let parsed;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(raw) as unknown;
   } catch {
     throw new Error(`Configuration file is not valid JSON: ${configPath}`);
   }
@@ -77,13 +87,13 @@ export async function loadConfig({ env = process.env, cwd = process.cwd() } = {}
   const dryRunValue = env.DRY_RUN ?? "false";
   if (dryRunValue !== "true" && dryRunValue !== "false") throw new Error("DRY_RUN must be exactly true or false");
 
-  const refreshKeys = ["REFRESH_TOKEN", "CLIENT_ID", "CLIENT_SECRET"];
-  const suppliedRefreshKeys = refreshKeys.filter((key) => typeof env[key] === "string" && env[key].trim() !== "");
+  const refreshKeys = ["REFRESH_TOKEN", "CLIENT_ID", "CLIENT_SECRET"] as const;
+  const suppliedRefreshKeys = refreshKeys.filter((key) => typeof env[key] === "string" && env[key]?.trim() !== "");
   if (suppliedRefreshKeys.length !== 0 && suppliedRefreshKeys.length !== refreshKeys.length) {
     throw new Error("REFRESH_TOKEN, CLIENT_ID and CLIENT_SECRET must be supplied together");
   }
 
-  const credentials = Object.freeze({
+  const credentials: ServiceCredentials = Object.freeze({
     accessToken: required(env, "ACCESS_TOKEN"),
     refreshToken: suppliedRefreshKeys.length ? env.REFRESH_TOKEN : undefined,
     clientId: suppliedRefreshKeys.length ? env.CLIENT_ID : undefined,
@@ -98,6 +108,12 @@ export async function loadConfig({ env = process.env, cwd = process.cwd() } = {}
     maxReadingAgeMinutes,
     dryRun: dryRunValue === "true",
     credentials,
-    mappings: Object.freeze(mappings)
+    mappings
   });
+}
+
+export class EnvironmentConfigLoader {
+  load(options: EnvironmentConfigLoadOptions = {}): Promise<ServiceConfigurationInterface> {
+    return loadConfig(options);
+  }
 }

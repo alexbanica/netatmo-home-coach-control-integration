@@ -3,19 +3,25 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=24 <25"
-  },
+  "engines": { "node": ">=24 <25" },
   "scripts": {
-    "check": "set -e; eslint .; for f in src/*.js test/*.js; do [ -f \"$f\" ] || continue; node --check \"$f\"; done",
-    "test": "node --test test/sync.test.js",
-    "start": "node src/index.js",
-    "start:local": "node --env-file-if-exists=.env.local src/index.js"
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "lint": "eslint .",
+    "check": "npm run lint && npm run typecheck",
+    "test": "node --import tsx --test tests/unit/domain/*.test.ts tests/unit/application/*.test.ts",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "start:local": "npm run build && node --env-file-if-exists=.env.local dist/main.js"
   },
   "dependencies": {
     "tough-cookie": "6.1.0"
   },
   "devDependencies": {
-    "eslint": "10.14.0"
+    "@types/node": "24.6.0",
+    "eslint": "10.14.0",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.0"
   }
 }
