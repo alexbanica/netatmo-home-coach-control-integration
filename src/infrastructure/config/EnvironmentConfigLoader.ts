@@ -4,6 +4,8 @@ import type { ServiceConfigurationInterface, ServiceCredentials, ServiceMapping 
 
 const DEFAULT_SYNC_INTERVAL_MINUTES = 5;
 const DEFAULT_MAX_READING_AGE_MINUTES = 15;
+const DEFAULT_HEALTHCHECK_PORT = 8080;
+const DEFAULT_HEALTHCHECK_MAX_CYCLE_SECONDS = 600;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -84,6 +86,11 @@ export async function loadConfig({ env = process.env, cwd = process.cwd() }: Env
 
   const syncIntervalMinutes = positiveInteger(env.SYNC_INTERVAL_MINUTES, "SYNC_INTERVAL_MINUTES", DEFAULT_SYNC_INTERVAL_MINUTES);
   const maxReadingAgeMinutes = positiveInteger(env.MAX_READING_AGE_MINUTES, "MAX_READING_AGE_MINUTES", DEFAULT_MAX_READING_AGE_MINUTES);
+  const healthcheckPort = positiveInteger(env.HEALTHCHECK_PORT, "HEALTHCHECK_PORT", DEFAULT_HEALTHCHECK_PORT);
+  if (healthcheckPort > 65535) throw new Error("HEALTHCHECK_PORT must be between 1 and 65535");
+  const healthcheckMaxCycleSeconds = positiveInteger(env.HEALTHCHECK_MAX_CYCLE_SECONDS, "HEALTHCHECK_MAX_CYCLE_SECONDS", DEFAULT_HEALTHCHECK_MAX_CYCLE_SECONDS);
+  const healthcheckMaxCycleMs = healthcheckMaxCycleSeconds * 1000;
+  if (!Number.isSafeInteger(healthcheckMaxCycleMs)) throw new Error("HEALTHCHECK_MAX_CYCLE_SECONDS must convert to safe milliseconds");
   const dryRunValue = env.DRY_RUN ?? "false";
   if (dryRunValue !== "true" && dryRunValue !== "false") throw new Error("DRY_RUN must be exactly true or false");
 
@@ -107,6 +114,8 @@ export async function loadConfig({ env = process.env, cwd = process.cwd() }: Env
     syncIntervalMinutes,
     maxReadingAgeMinutes,
     dryRun: dryRunValue === "true",
+    healthcheckPort,
+    healthcheckMaxCycleMs,
     credentials,
     mappings
   });
