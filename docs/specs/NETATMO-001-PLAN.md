@@ -160,3 +160,92 @@ On 2026-11-13 the user explicitly instructed "create a draft pr". The originatin
 ### A1 readiness dispositions and delivery guards
 
 Independent readiness `NETATMO-001-PLAN-A1-readiness` reviewed complete PLAN SHA-256 `9f03d15f341ac96f92334f4a71b096a335f52e8e7b96ec889da13a7fb41572d3` and unchanged SPEC. Two medium contingency gaps are resolved here: verify remote main exists before PR creation; if absent, retain blocked DRAFT and never silently retarget. Reconcile existing PRs read-only before creating one: reuse only a matching draft with base main, exact feature branch and verified published head; an incompatible existing PR blocks mutation rather than authorizing retarget/conversion. Inspect exact-head required checks after PR creation as well as feature push; pending, failed or unavailable checks retain DRAFT. Review was advisory; user and automatic amendment authority are recorded above. This disposition adds delivery guards only and preserves all prior scope.
+
+## Amendment 2 — 2026-11-13 — Business-only tests and Forgejo publisher
+
+- Amendment ID: NETATMO-001-PLAN-A2
+- Previous version: NETATMO-001-PLAN-A1
+- Approval: Automatically approved after independent readiness assurance and supported-finding disposition under the active implement request
+- Request and purpose: Implement the user's exact instructions "should not have infrastructure tests - containers. unit tests should be done only on business logic" and "should use forgejo integration as other nodejs projects to publish the docker image".
+- Effective SPEC: NETATMO-001-SPEC-A1, automatically approved; complete file SHA-256 e3d4e82fd0832da9acbc26ff8c82c071a123dbb1face2d40e908e06bc5cda66b.
+
+### Changes against the previous version
+
+| Section / requirement | Before | After | Reason |
+| --- | --- | --- | --- |
+| Validation and U1–U4 test ownership | Broad infrastructure/integration/container tests and CI image build/smoke | Business-only test/sync.test.js with injected client/clock; remove other test modules, container fixtures/helper and test:container script. Static lint/syntax remains. Remove CI image build/smoke; publisher owns functional image build | Explicit named user exclusion; prior evidence is historical, not mandatory or newly claimed |
+| Docker and CI/release boundary | Image publication excluded | New .github/workflows/publish-docker-images.yml follows sibling tag-push publisher conventions for Forgejo ARM64 images; existing Dockerfile/base unchanged | Explicit publishing request |
+| Delivery workspace | Published, clean detached worktree at eac4abc1bdc68040ef21a23d850e2d34a4dbb2b3 | Refresh origin/feature/netatmo-homecoach-true-temperature, verify ancestry/equality and clean retained worktree, then reattach exact branch and append a non-force correction commit to existing DRAFT PR #1 | Continue verified existing delivery; no new branch, PR, worktree or main mutation |
+
+### Preserved behavior and impact
+
+Keep all production src/** files and Dockerfile unchanged. Preserve runtime safety fixes; deleting their infrastructure tests does not revert the fixes or claim current infrastructure validation. Keep existing SPEC/PLAN bodies/status/history and append-only amendments. Preserve private/IDE content in invoking main. Continue full assurance: one independent code review, external publication-contract review, a consolidated supported correction batch, independent QA restricted to business tests/static checks, then documentation-writer and parent Git/PR verification. No security-reviewer trigger exists; no explicit security review was requested. Architect planning assurance is inapplicable: publication is a technical delivery stage, not a second interacting business domain.
+
+### Evidence and publishing decisions
+
+Read-only explorer NETATMO-001-FORGEJO-PATTERN inspected current local sibling workflows: still-good-api HEAD fc70af7c32d76ded3c11d78fded091b9e9050a06, .github/workflows/publish-docker-images.yml:4–123, and service-availability-scheduler HEAD b67ce59aebec46d6515b1fa6e3d36259d177c519, matching workflow:13–86. Reuse registry forgejo.alexlab.nl, namespace alexlab, native ubuntu-24.04-arm, read-only contents permission, exact tagged checkout, lowercase tag validation/128-character suffix bound, secrets FORGEJO_REGISTRY_USERNAME and FORGEJO_REGISTRY_TOKEN, matching release/latest push digests and unconditional credential cleanup. The explorer's initial Homebridge-target inference was explicitly withdrawn; this target is netatmo-home-coach-control-integration with its existing bookworm-slim Dockerfile.
+
+Use a single publishing job. Trigger only non-deleted tag pushes (tags: ['*']); never PR/feature/main branch publication. Check out github.sha with persist-credentials:false, pin the sibling checkout action 3d3c42e5aac5ba805825da76410c181273ba90b1 and registry login action dbcb813823bdd20940b903addbd779551569679f. Before login, validate ^[a-z0-9_][a-z0-9._-]*$ and the complete image-tag length, run npm ci/check/test, and check native runner architecture. Build Dockerfile at repository root for linux/arm64 with tags forgejo.alexlab.nl/alexlab/netatmo-home-coach-control-integration:<tag>-node24-bookworm-slim and :latest-node24-bookworm-slim. Add OCI version/revision labels directly to docker build; no unused build args or package-version equality gate. Do not change the existing pinned runtime base.
+
+Use isolated temporary DOCKER_CONFIG, login-action secrets, shell fail-fast/pipefail, two docker pushes and captured digest receipt checks. Require valid matching sha256 digests in both push receipts and write image references/digests to GitHub job summary. Inspect built image architecture as delivery metadata only; never run a container or smoke/infrastructure test. Always logout and remove temporary credential material without printing credentials. No registry credentials on ordinary CI or pre-validation steps. No secret provisioning, tag creation, registry mutation from this assistant session or deployment follows from source implementation. Actual tag-triggered publication is pending release authority/version and registry credentials; current repository-level secret-name inspection returned none, and no secret value was read. This pending evidence must be explicit in final delivery.
+
+### Delivery units and ownership
+
+| Unit | Exclusive ownership | Prerequisites | Evidence |
+| --- | --- | --- | --- |
+| T — business test correction | developer; package.json, optional lock metadata, .gitignore, test/**, deleted scripts/test-container.mjs | Explicit named user test-scope exclusion; no amendment prerequisite required for this exclusion | Already completed eight injected-client business cases and static check; parent verifies test scope and removed infrastructure assets |
+| F — publisher and CI | developer; .github/workflows/ci.yml and .github/workflows/publish-docker-images.yml | Effective SPEC approval and PLAN readiness assurance | Tag guard, image/secret naming, exact source/ARM64 publication, bounded receipt checks/cleanup; CI only locked install/check/business tests; static source inspection without container tests or registry effects |
+| D — final docs | documentation-writer; README.md and docs/operations.md | Integrated review corrections and reduced-scope QA | Remove obsolete container-test commands/claims; explain business tests, Forgejo tags/platform/secrets/trigger and pending actual publication/A5 |
+
+Parent owns SPEC/PLAN, interpretation, source integration, commits/pushes, DRAFT PR #1 metadata and exact-head checks. Workers preserve other edits, never Git/delivery mutations; five-minute bounded assignments and exact JSON evidence remain mandatory. Review/QA handoffs include eac4abc baseline, full actual diff, effective hashes and the named exclusions. No additional infrastructure test or container execution is authorized under the reduced scope.
+
+### Requirement-to-delivery trace
+
+| Effective requirement | Unit / paths | Validation or terminal evidence |
+| --- | --- | --- |
+| User business-only tests; revised A1–A4 evidence scope | T; test/sync.test.js, package.json, deletions | Only business-rule imports and injected client/clock; mapping/freshness/rounding/no-op/5°C/dry-run/failure/no-replay/abort cases; npm test and npm run check |
+| Runtime invariants and prior accepted safety fixes | Parent source boundary src/** | No production source diff; code review checks preservation, not replacement infrastructure tests |
+| SPEC-A1 Docker publication contract and event/auth/tag boundaries | F; publisher workflow | Independent static code/contract review of exact trigger/source/tag/namespace/platform/secrets/cleanup and receipt handling; actual publication pending tag/credentials, not fabricated by unit tests |
+| CI scope and exclusions | F; ci.yml, T deletions | Existing PR/main/exact-feature triggers retained; static checks and business units only; no container build/smoke in ordinary CI |
+| A6 | D; README/operations | Parent command and workflow parity check; excluded evidence and publication prerequisites disclosed |
+| A5 and delivery | Parent; existing feature branch/DRAFT PR | No live calls; A5 remains unmet; verify appended commit/upstream, PR head and final-head CI, clean detached retained worktree |
+
+### Approval record
+
+Originating implement plus the two exact user instructions automatically authorize this complete effective PLAN revision after independent readiness review and disposition of supported findings. The test exclusion itself is already authoritative and is not blocked on amended artifacts. Registry publication configuration expands the original exclusion under explicit user authority; no new tag, credential or deployment authority is inferred. Readiness evidence and final automatic approval are recorded below after review.
+
+### A2 readiness disposition and complete effective approval
+
+Independent NETATMO-001-PUBLISH-READINESS reviewed SPEC SHA-256 e3d4e82fd0832da9acbc26ff8c82c071a123dbb1face2d40e908e06bc5cda66b and proposed PLAN SHA-256 18e73e4b4cf5cb4505956d44c97e5656a47b90399a93a9ed52e7fec2a170e6c5 across consistency, trace, publisher boundaries, sequencing, assurance and delivery. One medium workspace-sequencing finding is resolved: refresh/equality/clean-detached verification and branch reattachment were already completed before T edits. The current valid state is the exact feature branch attached at eac4abc with matching upstream, intentionally dirty only for authorized T changes and append-only artifacts. Before F assignment, verify this branch/upstream and reconcile the expected changed paths; preserve those changes. Do not repeat worktree preparation or demand a clean state after authorized edits. This supersedes any future-tense wording in the workspace row above.
+
+Parent verified eight business tests/static checks and unchanged production source. Additional existing business-rule cases may be preserved in test/sync.test.js without adding infrastructure imports, real timers, network or container tests. This is business coverage within T, not a new validation category. The complete effective PLAN through NETATMO-001-PLAN-A2 is automatically approved on 2026-11-13 under the originating implement request and explicit user instructions, following readiness review and this supported finding disposition. Original document status and prior content/approvals are preserved. No manual user review of this generated revision is claimed.
+
+## Amendment 3 — 2026-11-13 — Reject the reserved release alias
+
+- Amendment ID: NETATMO-001-PLAN-A3
+- Previous version: NETATMO-001-PLAN-A2
+- Approval: Automatically approved after independent readiness assurance under the active implement request
+- Effective SPEC: NETATMO-001-SPEC-A2, automatically approved; file SHA-256 f55e3c60e7e5ea512bec3b035ee9f9a1505e2f85993a7e83401a7dc7c90779bf.
+- Request and purpose: Resolve the supported medium reserved-tag collision reported by independent NETATMO-001-REVISED-CONTRACT. NETATMO-001-REVISED-CODE found no other correctness defects in the complete changed boundary.
+
+### Changes against the previous version
+
+| Section / requirement | Before | After | Reason |
+| --- | --- | --- | --- |
+| F tag pre-validation | Syntax/length checks allow Git tag latest | Also fail when the Git tag is latest, before dependency installation, credentials, build or push | Keep release and moving aliases distinct |
+
+### Preserved behavior and impact
+
+All PLAN-A2 decisions, source ownership, full assurance, user business-test exclusion, exact image/platform, secret names, cleanup and delivery remain. src/** and Dockerfile stay unchanged; no infrastructure tests or container execution are added. One business domain remains; architect planning assurance is inapplicable. No published tag/image exists for this delivery, so no migration or retag action is required.
+
+### Requirement-to-delivery trace and correction unit
+
+The publisher owner makes one bounded change to .github/workflows/publish-docker-images.yml only: reject reserved tag latest in the existing pre-validation step, with a fixed credential-free diagnostic. Evidence is static code/contract review disposition, YAML parsing/bash syntax, unchanged business suite and restricted final QA; no infrastructure test harness is introduced. The prior full code/contract reviews covered the complete staged boundary at tree b5a6bd8d5e849e96e1d78db9f2a8439a7a5bcaee, SPEC-A1 and PLAN-A2. Only this accepted correction follows that wave; final independent QA assesses it and the existing reduced scope, followed by documentation synchronization and verified non-force push to existing PR #1. Actual publication and A5 stay pending their stated external prerequisites.
+
+### Approval record
+
+The complete effective PLAN through NETATMO-001-PLAN-A3 is automatically authorized after mandatory independent readiness review and supported-finding disposition under the originating implement request. This is a correction inside the current consolidated review cycle, not a new routine approval or continuation gate. Readiness outcome and final automatic approval follow below.
+
+### A3 readiness and complete effective approval
+
+Independent NETATMO-001-ALIAS-READINESS reviewed complete effective SPEC SHA-256 f55e3c60e7e5ea512bec3b035ee9f9a1505e2f85993a7e83401a7dc7c90779bf and proposed PLAN SHA-256 f920223f26754e901effd87c9a6eaacc22da2d8193224b6e28b5fcac400ac5cc for consistency, scope, trace, correction boundary, assurance, exclusions and delivery. No readiness findings were reported. The complete effective PLAN through NETATMO-001-PLAN-A3 is automatically approved on 2026-11-13 under the originating implement request, with only the reserved-tag correction added to the already authorized publisher and business-test scope. Prior document status/content and user authority boundaries remain unchanged.

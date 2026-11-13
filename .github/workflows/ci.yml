@@ -22,7 +22,3 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
-      - name: Build container
-        run: docker build --tag netatmo-homecoach:ci .
-      - name: Smoke test container
-        run: npm run test:container -- --image netatmo-homecoach:ci

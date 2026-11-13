@@ -214,32 +214,60 @@ container runtime; do not place them in Docker build arguments, image layers,
 or command-line values. Ensure the host config file is readable by the image's
 non-root UID 1000. Run one container for each configuration.
 
-The repository's deterministic container check can be run against a locally
-built image. Select the local daemon explicitly for the helper as well:
-
-```sh
-DOCKER_CONTEXT=default npm run test:container -- --image netatmo-homecoach:local
-```
-
-It checks non-root identity, image contents/history, invalid startup,
-fixture-backed dry-run and SIGINT/SIGTERM handling. It uses local Docker and
-mocked HTTP fixtures; it does not test a remote Pi or Netatmo account.
-
 ## CI and local checks
 
-GitHub Actions runs on pull requests and pushes to `main` and
-`feature/netatmo-homecoach-true-temperature`. It installs the lockfile,
-checks source, runs deterministic tests, builds the image and runs the
-container smoke check. It uses no Netatmo account credentials, performs no
-live API calls, publishes no image and deploys nothing.
+GitHub Actions validation runs on pull requests and pushes to `main` and
+`feature/netatmo-homecoach-true-temperature`. It installs locked dependencies,
+runs the source check and the 12 business-rule unit cases. These tests do not
+exercise infrastructure, authentication, HTTP, scheduling or container
+execution. Validation uses no Netatmo account credentials and makes no live API
+calls. Ordinary CI does not build or publish a container image and does not
+deploy the service.
 
-The same source and unit checks are:
+The same source and business unit checks are:
 
 ```sh
 npm run check
 npm test
 ```
 
-The container commands above require a local Docker daemon. Passing these
-checks does not satisfy live A5 acceptance or demonstrate physical heating
-behavior.
+These checks do not satisfy live A5 acceptance or demonstrate physical
+heating behavior.
+
+## Forgejo image publishing
+
+The separate `.github/workflows/publish-docker-images.yml` workflow runs only
+for non-deleted Git tag push events. It checks out the tagged commit, validates
+the tag before dependency installation or registry login, then runs `npm ci`,
+`npm run check`, and `npm test` before building or pushing. It does not run for
+pull requests, branch pushes (including `main`), or manual dispatch. It does
+not create release tags or deploy the service.
+
+The Git tag determines the image version; it does not need to match
+`package.json`'s version. Tags must be lowercase Docker-compatible values
+matching `^[a-z0-9_][a-z0-9._-]*$`. The reserved tag `latest` is rejected, and
+the tag with the `-node24-bookworm-slim` suffix must fit Docker's 128-character
+tag limit. The workflow builds for native `linux/arm64` on an ARM64 runner and
+uses the repository's pinned Bookworm-slim base image. It publishes:
+
+```text
+forgejo.alexlab.nl/alexlab/netatmo-home-coach-control-integration:<tag>-node24-bookworm-slim
+forgejo.alexlab.nl/alexlab/netatmo-home-coach-control-integration:latest-node24-bookworm-slim
+```
+
+The moving `latest-node24-bookworm-slim` alias is pushed alongside each
+versioned image. Its name does not guarantee version ordering or immutability.
+The workflow checks that both push receipts report the same valid image digest
+and records image references and digests in the job summary. It inspects image
+architecture metadata but does not run the image or perform a container smoke
+test. Registry credentials are used only by the publishing workflow, and
+temporary Docker credentials are logged out and removed after the job.
+
+Repository secrets `FORGEJO_REGISTRY_USERNAME` and `FORGEJO_REGISTRY_TOKEN`
+must be configured with permission to push to the `alexlab` namespace on
+`forgejo.alexlab.nl`. Never place secret values in source, commands, or logs.
+This repository currently has no configured repository-level secret names.
+Publication has not been performed: it requires those credentials and a
+selected, authorized release tag pointing at a commit that contains the
+publisher workflow. The workflow itself neither creates that tag nor grants
+deployment authority. Live calibration acceptance A5 also remains pending.

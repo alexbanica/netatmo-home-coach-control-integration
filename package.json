@@ -7,11 +7,10 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "check": "set -e; eslint .; for f in src/*.js test/*.js scripts/*.js scripts/*.mjs; do [ -f \"$f\" ] || continue; node --check \"$f\"; done",
-    "test": "node --test test/*.test.js",
+    "check": "set -e; eslint .; for f in src/*.js test/*.js; do [ -f \"$f\" ] || continue; node --check \"$f\"; done",
+    "test": "node --test test/sync.test.js",
     "start": "node src/index.js",
-    "start:local": "node --env-file-if-exists=.env.local src/index.js",
-    "test:container": "node scripts/test-container.mjs"
+    "start:local": "node --env-file-if-exists=.env.local src/index.js"
   },
   "dependencies": {
     "tough-cookie": "6.1.0"

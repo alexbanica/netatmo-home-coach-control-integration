@@ -91,3 +91,51 @@ No existing service behavior exists to preserve. Preserve LICENSE, private `.env
 ## Approval record
 
 Approved by the user on 2026-11-13 with "approve" in response to the updated complete specification. Approval includes direct web authentication, calibration limitations, configuration defaults, CI/build-only scope, live acceptance boundary and feature-branch/separate-worktree delivery constraint.
+
+## Amendment 1 — 2026-11-13 — Business-only tests and Forgejo image publication
+
+- Amendment ID: NETATMO-001-SPEC-A1
+- Previous version: original approved SPEC
+- Approval: Automatically approved under the originating implement request and explicit user scope instructions
+- Request and purpose: User instructed "should not have infrastructure tests - containers. unit tests should be done only on business logic", then "should use forgejo integration as other nodejs projects to publish the docker image".
+
+### Changes against the previous version
+
+| Section / requirement | Before | After | Reason |
+| --- | --- | --- | --- |
+| Scope/exclusions; Docker and GitHub Actions | Registry publication and release automation excluded; CI builds and smoke-tests containers | Add tag-triggered GitHub Actions publication to Forgejo; ordinary CI performs static checks and business unit tests only | Explicit publication request and infrastructure-test exclusion |
+| A1–A4 validation | Configuration, transport/authentication, service/scheduler, container and integration tests required | Unit tests exercise mapping and calibration business rules using injected clients and clocks. Remove infrastructure, HTTP/authentication, scheduler/startup/logging and container tests, fixtures and smoke commands. Do not rerun or require those excluded tests | Exact user test-scope instruction overrides prior validation obligations |
+| Docker publication contract | Build-only Docker support | Publish linux/arm64 images to forgejo.alexlab.nl/alexlab/netatmo-home-coach-control-integration on a non-deleted tag push. Tags are <git-tag>-node24-bookworm-slim and latest-node24-bookworm-slim | Current still-good-api and service-availability-scheduler local workflow conventions |
+
+### Preserved behavior and impact
+
+Runtime behavior, all calibration/authentication safety controls, exact mappings, dry-run, Dockerfile's pinned Node 24.21.0 bookworm-slim base, and live A5 authority remain unchanged. The changed acceptance scope omits infrastructure-test evidence; earlier test runs are historical evidence, not current acceptance requirements. A5 still requires separately authorized nonzero calibration and subsequent room/app evidence. No deployment, main merge, release-tag creation, or immediate registry mutation is authorized merely by configuring the workflow.
+
+The publisher checks out the exact tagged commit without persisted Git credentials, validates lowercase Docker tag syntax and the 128-character suffixed-tag limit before credentials, runs locked installation/static checks/business units, and builds on a native ARM64 runner. It authenticates only to forgejo.alexlab.nl using GitHub Actions secrets FORGEJO_REGISTRY_USERNAME and FORGEJO_REGISTRY_TOKEN, pushes the versioned and moving tags, verifies matching published digests, and always logs out/cleans temporary Docker credentials. Build, image metadata and publication-receipt verification are delivery operations, not container runtime tests. Do not add container execution, smoke tests or infrastructure unit tests. Application credentials are never supplied to publication.
+
+The Git tag defines the image version; no package.json equality gate is introduced because the inspected sibling Docker workflows have none. The workflow does not create tags or run on PR/feature-branch pushes. Actual publication remains pending a release tag and available registry credentials; repository-level secret-name inspection on 2026-11-13 returned none. No secret values were read.
+
+### Approval record
+
+NETATMO-001-SPEC-A1 is automatically approved on 2026-11-13 by the active implement amendment procedure, based on both exact user instructions above. Approval covers the complete effective SPEC, including this test-evidence reduction and bounded publishing addition; it does not claim the user manually reviewed this generated amendment. Corresponding PLAN amendment: NETATMO-001-PLAN-A2.
+
+## Amendment 2 — 2026-11-13 — Reserve the moving image alias
+
+- Amendment ID: NETATMO-001-SPEC-A2
+- Previous version: NETATMO-001-SPEC-A1
+- Approval: Automatically approved under the active implement request
+- Request and purpose: Correct the supported medium finding from NETATMO-001-REVISED-CONTRACT: Git tag latest would collapse the versioned and moving image references into the same name.
+
+### Changes against the previous version
+
+| Section / requirement | Before | After | Reason |
+| --- | --- | --- | --- |
+| SPEC-A1 Docker tag validation | Lowercase Docker tag syntax and suffixed length limit | Same rules, plus reject the reserved Git tag latest before credentials or publication | Preserve separate versioned and moving references |
+
+### Preserved behavior and impact
+
+All other accepted release tags, image naming, pinned runtime base, ARM64 platform, credentials, receipts/cleanup, business-only test restriction and live A5 boundary remain unchanged. No new test category, tag creation, credential provisioning or registry mutation is authorized by this correction. The user has not supplied a release tag; no existing published artifact is changed. Corresponding PLAN revision: NETATMO-001-PLAN-A3.
+
+### Approval record
+
+On 2026-11-13 the active implement automatic amendment procedure authorizes the complete effective SPEC through NETATMO-001-SPEC-A2. This bounded correctness correction implements distinct release/latest naming and is not a claim of separate manual user approval.

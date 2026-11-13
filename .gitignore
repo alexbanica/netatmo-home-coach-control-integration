@@ -150,5 +150,4 @@ vite.config.ts.timestamp-*
 
 # Local runtime configuration and credentials
 config.json
-!test/fixtures-container/config.json
 .env.local
