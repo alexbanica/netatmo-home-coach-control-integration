@@ -147,3 +147,11 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Local runtime configuration and credentials
+config.json
+.env.local
+
+# TypeScript build output
+dist/
+*.tsbuildinfo

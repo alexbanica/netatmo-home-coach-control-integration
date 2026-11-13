@@ -1,0 +1,189 @@
+name: Publish Docker images
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.event.deleted != true
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: npm
+
+      - name: Validate tag and prepare image references
+        id: metadata
+        shell: bash
+        env:
+          GIT_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$GIT_TAG" =~ ^[a-z0-9_][a-z0-9._-]*$ ]]; then
+            echo "Git tag is not valid for a Docker image tag." >&2
+            exit 1
+          fi
+          if [[ "$GIT_TAG" == "latest" ]]; then
+            echo "Git tag 'latest' is reserved for the moving image tag." >&2
+            exit 1
+          fi
+          version_tag="${GIT_TAG}-node24-bookworm-slim"
+          if (( ${#version_tag} > 128 )); then
+            echo "Suffixed Docker image tag exceeds 128 characters." >&2
+            exit 1
+          fi
+          image="forgejo.alexlab.nl/alexlab/netatmo-home-coach-control-integration"
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+          printf 'version_tag=%s\n' "$version_tag" >> "$GITHUB_OUTPUT"
+          printf 'latest_tag=latest-node24-bookworm-slim\n' >> "$GITHUB_OUTPUT"
+
+      - name: Verify native ARM64 runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(uname -m)" != "aarch64" ]]; then
+            echo "Publisher requires a native ARM64 runner." >&2
+            exit 1
+          fi
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run static checks
+        run: npm run check
+
+      - name: Run business unit tests
+        run: npm test
+
+      - name: Compile application
+        run: npm run build
+
+      - name: Check registry credentials are configured
+        shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ secrets.FORGEJO_REGISTRY_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.FORGEJO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$REGISTRY_USERNAME" || -z "$REGISTRY_TOKEN" ]]; then
+            echo "Forgejo registry credentials are not configured." >&2
+            exit 1
+          fi
+
+      - name: Create isolated Docker credential directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker_config="$RUNNER_TEMP/docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          install -d -m 700 "$docker_config"
+          printf 'DOCKER_CONFIG=%s\n' "$docker_config" >> "$GITHUB_ENV"
+
+      - name: Log in to Forgejo registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: forgejo.alexlab.nl
+          username: ${{ secrets.FORGEJO_REGISTRY_USERNAME }}
+          password: ${{ secrets.FORGEJO_REGISTRY_TOKEN }}
+
+      - name: Build and inspect ARM64 image
+        shell: bash
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          VERSION_TAG: ${{ steps.metadata.outputs.version_tag }}
+          LATEST_TAG: ${{ steps.metadata.outputs.latest_tag }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --platform linux/arm64 \
+            --label "org.opencontainers.image.version=$GITHUB_REF_NAME" \
+            --label "org.opencontainers.image.revision=$REVISION" \
+            --tag "$IMAGE:$VERSION_TAG" \
+            --tag "$IMAGE:$LATEST_TAG" \
+            .
+          platform="$(docker image inspect "$IMAGE:$VERSION_TAG" --format '{{.Os}}/{{.Architecture}}')"
+          if [[ "$platform" != "linux/arm64" ]]; then
+            echo "Built image metadata does not report linux/arm64." >&2
+            exit 1
+          fi
+
+      - name: Push versioned image and verify receipt
+        id: push_versioned
+        shell: bash
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          VERSION_TAG: ${{ steps.metadata.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/push-versioned-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          docker push "$IMAGE:$VERSION_TAG" 2>&1 | tee "$receipt"
+          digest="$(sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' "$receipt" | tail -n 1)"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Versioned image push did not return a valid sha256 digest." >&2
+            exit 1
+          fi
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Push latest image and verify matching receipt
+        id: push_latest
+        shell: bash
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          LATEST_TAG: ${{ steps.metadata.outputs.latest_tag }}
+          VERSIONED_DIGEST: ${{ steps.push_versioned.outputs.digest }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/push-latest-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          docker push "$IMAGE:$LATEST_TAG" 2>&1 | tee "$receipt"
+          digest="$(sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' "$receipt" | tail -n 1)"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Latest image push did not return a valid sha256 digest." >&2
+            exit 1
+          fi
+          if [[ "$digest" != "$VERSIONED_DIGEST" ]]; then
+            echo "Versioned and latest image push digests do not match." >&2
+            exit 1
+          fi
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize published image references
+        if: success()
+        shell: bash
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          VERSION_TAG: ${{ steps.metadata.outputs.version_tag }}
+          LATEST_TAG: ${{ steps.metadata.outputs.latest_tag }}
+          VERSIONED_DIGEST: ${{ steps.push_versioned.outputs.digest }}
+          LATEST_DIGEST: ${{ steps.push_latest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo '## Published Forgejo images'
+            echo
+            printf -- '- `%s:%s` — `%s`\n' "$IMAGE" "$VERSION_TAG" "$VERSIONED_DIGEST"
+            printf -- '- `%s:%s` — `%s`\n' "$IMAGE" "$LATEST_TAG" "$LATEST_DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Log out and remove Docker credentials
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker_config="$RUNNER_TEMP/docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ -d "$docker_config" ]]; then
+            DOCKER_CONFIG="$docker_config" docker logout forgejo.alexlab.nl >/dev/null 2>&1 || true
+            rm -rf -- "$docker_config"
+          fi
