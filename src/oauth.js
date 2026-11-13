@@ -13,6 +13,17 @@ function validateApiUrl(value) {
   return url.href;
 }
 
+function responseErrorCode(response) {
+  if (typeof response?.text !== "string") return undefined;
+  try {
+    const payload = JSON.parse(response.text);
+    const code = payload?.error?.code;
+    return typeof code === "number" ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** OAuth reads and one in-memory refresh opportunity per synchronization cycle. */
 export class OAuthClient {
   constructor({ httpClient, accessToken, refreshToken, clientId, clientSecret } = {}) {
@@ -45,7 +56,9 @@ export class OAuthClient {
       headers: requestHeaders,
       allowedHosts: API_HOSTS
     });
-    if (response.status !== 401 || safeMethod !== "GET" || !this.refreshToken || this.refreshAttempted) return response;
+    if (safeMethod !== "GET" || !this.refreshToken || this.refreshAttempted) return response;
+    const errorCode = responseErrorCode(response);
+    if (errorCode === 13 || (response.status !== 401 && errorCode !== 2 && errorCode !== 3)) return response;
     this.refreshAttempted = true;
     await this.refresh(options.signal);
     const retryHeaders = new Headers(headers);

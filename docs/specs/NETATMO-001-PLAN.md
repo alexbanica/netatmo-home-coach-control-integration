@@ -249,3 +249,42 @@ The complete effective PLAN through NETATMO-001-PLAN-A3 is automatically authori
 ### A3 readiness and complete effective approval
 
 Independent NETATMO-001-ALIAS-READINESS reviewed complete effective SPEC SHA-256 f55e3c60e7e5ea512bec3b035ee9f9a1505e2f85993a7e83401a7dc7c90779bf and proposed PLAN SHA-256 f920223f26754e901effd87c9a6eaacc22da2d8193224b6e28b5fcac400ac5cc for consistency, scope, trace, correction boundary, assurance, exclusions and delivery. No readiness findings were reported. The complete effective PLAN through NETATMO-001-PLAN-A3 is automatically approved on 2026-11-13 under the originating implement request, with only the reserved-tag correction added to the already authorized publisher and business-test scope. Prior document status/content and user authority boundaries remain unchanged.
+
+## Amendment 4 — 2026-11-13 — Repair workflow context and OAuth recovery
+
+- Amendment ID: NETATMO-001-PLAN-A4
+- Previous version: NETATMO-001-PLAN-A3
+- Approval: Automatically approved after independent readiness assurance and trigger-precedence disposition under active implement
+- Effective SPEC: unchanged NETATMO-001-SPEC-A2, file SHA-256 f55e3c60e7e5ea512bec3b035ee9f9a1505e2f85993a7e83401a7dc7c90779bf.
+- Request and purpose: Correct final-head workflow validation failure and a supported automated review finding in the existing token recovery behavior. These are required implementation corrections, not a new feature or a request to reintroduce excluded tests.
+
+### Changes against the previous version
+
+| Section / requirement | Before | After | Reason |
+| --- | --- | --- | --- |
+| Publisher credential-directory setup | Job-level env uses runner.temp, which is not available there | Existing shell setup computes the owned path from RUNNER_TEMP/run ID/attempt, creates it and writes DOCKER_CONFIG to GITHUB_ENV for subsequent login/build/push steps | Repair invalid GitHub workflow while preserving exact isolation/cleanup semantics |
+| Source preservation; OAuth read recovery | src/** unchanged; OAuth refreshes only after HTTP 401 | Allow a minimal src/oauth.js correction: GET reads may refresh on HTTP 401 or explicit numeric API error codes 2/3, once per cycle with configured credentials; retry that GET once. Never refresh for unrelated forbidden code 13; never replay POST | Fulfil the existing SPEC requirement for recoverable expired read credentials |
+
+### Evidence, preserved behavior and impact
+
+GitHub push run 43440540607 at commit 217da63697ed27589993a0c46671fdb2eaff4c31 failed workflow validation before jobs. Read-only diagnostician NETATMO-001-WORKFLOW-DIAG confirmed the local context violation against https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability and the GITHUB_ENV mechanism at https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#setting-an-environment-variable. The precise server annotation was unavailable; successful next-head validation must establish the correction, without executing tag publication.
+
+Read-only explorer NETATMO-001-OAUTH-EVIDENCE verified official Netatmo sources: https://github.com/Netatmo/Netatmo-API-PHP/blob/master/src/Netatmo/Clients/NAApiClient.php#L535-L557 refreshes once for invalid/expired token codes; https://github.com/Netatmo/Netatmo-API-PHP/blob/master/src/Netatmo/Common/NARestErrorCode.php#L274-L297 defines INVALID_ACCESS_TOKEN=2, ACCESS_TOKEN_EXPIRED=3 and OPERATION_FORBIDDEN=13. Current src/oauth.js checks only status 401. These sources establish code semantics, not the unverified assertion that Netatmo necessarily uses HTTP 403 for code 3. Recognize explicit error codes independently of status using safely parsed response text; malformed/unrelated bodies do not trigger refresh or expose raw content. Source evidence is moving-master documentation, not a pinned live protocol reproduction.
+
+SPEC behavior, write payloads, no calibration replay, once-per-cycle refresh, token rotation, source mappings and all other runtime files remain unchanged. The src/** preservation statement is narrowed only for this confirmed OAuth conformance fix. No new business domain is introduced; architect assurance remains inapplicable. Preserve the explicit business-only unit scope: do not add or execute HTTP/authentication/container infrastructure tests. Static source/contract review, syntax checks, the existing 12 business cases and final-head CI are the current permitted evidence; no OAuth runtime-test result is claimed.
+
+### Units, trace and assurance
+
+W owns only .github/workflows/publish-docker-images.yml for the context correction. O owns only src/oauth.js for the bounded GET authentication guard. Both require this effective PLAN readiness approval, preserve other edits, and have five-minute bounded JSON handoffs. Parent retains SPEC/PLAN/Git/PR authority. Independent code and contract review cover the full two-file correction against published baseline 217da63697ed27589993a0c46671fdb2eaff4c31 and verify prior unchanged coverage through actual diff/effective artifacts. Apply consolidated supported corrections, then independent QA runs only business units/static checks and documentation-writer synchronizes affected operations wording. Verify final-head GitHub parsing and push/PR CI; actual publisher execution still requires tag/credentials and is not inferred from branch CI. Do not mutate review threads or the externally changed ready-for-review state of PR #1.
+
+Trace: SPEC synchronization 8 and credential recovery -> O/src/oauth.js/static contract/code review plus syntax; SPEC-A1 publishing isolation -> W/publisher/context/GITHUB_ENV inspection plus final-head workflow validation; user test exclusion -> unchanged test/sync.test.js and npm test/static checks only; A6 -> README/operations parity; A5 and actual publication -> unchanged missing external prerequisites. No tag, registry write, deployment, merge or secret provisioning is performed by these repairs.
+
+### Approval record
+
+The originating implement request automatically authorizes this complete effective PLAN revision after independent readiness and disposition. It repairs required behavior and hosted validation without creating an extra user approval gate or overriding the explicit test exclusion. Readiness outcome and final automatic approval follow below.
+
+### A4 readiness disposition and complete effective approval
+
+Independent NETATMO-001-RECOVERY-READINESS reviewed complete SPEC SHA-256 f55e3c60e7e5ea512bec3b035ee9f9a1505e2f85993a7e83401a7dc7c90779bf and draft PLAN SHA-256 7ce4b2b5f3f032a25c3b304d66671fc9caa9d44ed0d8605877b5dcce8050f5d9 for consistency, source/recovery boundaries, exclusions, ownership, assurance and delivery. One medium trigger-precedence ambiguity is resolved as follows: GET/configured-refresh/not-yet-attempted guards apply first. Safely parse the optional response error code; explicit numeric code 13 suppresses refresh even if the status is 401. Otherwise HTTP 401 remains sufficient regardless of missing, malformed or unrelated JSON; for any non-401 status, only explicit numeric code 2 or 3 enables refresh. Missing/malformed/unrelated JSON by itself is never an additional trigger. This preserves existing generic 401 recovery except a definite forbidden signal and never treats unrelated non-401 forbidden responses as expiry. No raw response body or credential enters diagnostics.
+
+The complete effective PLAN through NETATMO-001-PLAN-A4 is automatically approved on 2026-11-13 under the active implement request after this readiness disposition. Prior document status/content and explicit user test and external-effect boundaries remain preserved; no separate manual approval is claimed.

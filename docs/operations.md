@@ -83,10 +83,18 @@ The OAuth token is used for Home Coach, homes and room-status reads. If only
 `ACCESS_TOKEN` is configured, the service logs an access-token-only warning:
 it cannot recover automatically when that token expires. To enable the
 optional refresh attempt, provide `REFRESH_TOKEN`, `CLIENT_ID` and
-`CLIENT_SECRET` together. Refresh is attempted at most once per cycle; a
-rotated refresh token is held in memory and is not written back to a file.
-After restart, provide a still-valid provisioned refresh token. The service
-does not provide durable refresh-token rotation or recovery.
+`CLIENT_SECRET` together. For a GET, the service can refresh once per cycle
+after HTTP 401 or an explicit numeric API error code 2 (invalid access token)
+or 3 (expired access token). Explicit numeric code 13 suppresses refresh even
+on HTTP 401; for other HTTP statuses, only explicit code 2 or 3 triggers it.
+Malformed, missing or unrelated response bodies do not trigger a refresh on
+their own. If refresh succeeds, the original GET is retried once. Writes are
+never replayed during OAuth recovery. A rotated refresh token is held in memory
+and is not written back to a file. After restart, provide a still-valid
+provisioned refresh token. The service does not provide durable refresh-token
+rotation or recovery. The meanings of codes 2, 3 and 13 follow Netatmo's
+official PHP SDK definitions; OAuth recovery has not been runtime-tested for
+this service.
 
 Calibration uses a separate direct Netatmo web login with
 `NETATMO_USERNAME` and `NETATMO_PASSWORD`. Cookies and its access token remain
@@ -170,8 +178,10 @@ credential-bearing URLs and raw authentication bodies are excluded.
 - `dry_run`: review the intended mapping and values. Set `DRY_RUN=false` only
   when a calibration write is deliberately intended.
 - Access-token-only warning or OAuth refresh diagnostics: reprovision valid
-  OAuth credentials; a complete refresh credential trio enables one refresh
-  attempt per cycle. After restart, supply a still-valid refresh token.
+  OAuth credentials; a complete refresh credential trio enables one GET
+  refresh attempt per cycle for HTTP 401 or explicit API code 2/3. Code 13
+  suppresses refresh, and writes are never replayed. After restart, supply a
+  still-valid refresh token.
 - Invalid/expired web session: the service may reauthenticate once during
   that cycle. Login challenges are not bypassed; if the web flow changed,
   update the supported service before relying on calibration.
