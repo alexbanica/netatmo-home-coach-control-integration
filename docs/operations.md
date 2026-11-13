@@ -212,7 +212,7 @@ docker --context default build --tag netatmo-homecoach:local .
 
 `--context default` selects the local Docker daemon, even if another context is
 configured as the host default. The Dockerfile uses the same digest-pinned
-Node 24.21 Bookworm-slim base for builder and runtime stages. It compiles the
+Node 24.21 Alpine base for builder and runtime stages. It compiles the
 TypeScript application in the builder, then packages the compiled `dist/`
 output with locked production dependencies. The image runs as the non-root
 `node` user and starts `node dist/main.js` in the foreground. It contains no
@@ -269,16 +269,16 @@ not create release tags or deploy the service.
 The Git tag determines the image version; it does not need to match
 `package.json`'s version. Tags must be lowercase Docker-compatible values
 matching `^[a-z0-9_][a-z0-9._-]*$`. The reserved tag `latest` is rejected, and
-the tag with the `-node24-bookworm-slim` suffix must fit Docker's 128-character
+the tag with the `-node24-alpine` suffix must fit Docker's 128-character
 tag limit. The workflow builds for native `linux/arm64` on an ARM64 runner and
-uses the repository's pinned Bookworm-slim base image. It publishes:
+uses the repository's pinned Alpine base image. It publishes:
 
 ```text
-forgejo.alexlab.nl/alexlab/netatmo-home-coach-control-integration:<tag>-node24-bookworm-slim
-forgejo.alexlab.nl/alexlab/netatmo-home-coach-control-integration:latest-node24-bookworm-slim
+forgejo.alexlab.nl/alexlab/netatmo-home-coach-control-integration:<tag>-node24-alpine
+forgejo.alexlab.nl/alexlab/netatmo-home-coach-control-integration:latest-node24-alpine
 ```
 
-The moving `latest-node24-bookworm-slim` alias is pushed alongside each
+The moving `latest-node24-alpine` alias is pushed alongside each
 versioned image. Its name does not guarantee version ordering or immutability.
 The workflow checks that both push receipts report the same valid image digest
 and records image references and digests in the job summary. It inspects image

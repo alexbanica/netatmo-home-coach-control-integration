@@ -40,7 +40,7 @@ jobs:
             echo "Git tag 'latest' is reserved for the moving image tag." >&2
             exit 1
           fi
-          version_tag="${GIT_TAG}-node24-bookworm-slim"
+          version_tag="${GIT_TAG}-node24-alpine"
           if (( ${#version_tag} > 128 )); then
             echo "Suffixed Docker image tag exceeds 128 characters." >&2
             exit 1
@@ -48,7 +48,7 @@ jobs:
           image="forgejo.alexlab.nl/alexlab/netatmo-home-coach-control-integration"
           printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
           printf 'version_tag=%s\n' "$version_tag" >> "$GITHUB_OUTPUT"
-          printf 'latest_tag=latest-node24-bookworm-slim\n' >> "$GITHUB_OUTPUT"
+          printf 'latest_tag=latest-node24-alpine\n' >> "$GITHUB_OUTPUT"
 
       - name: Verify native ARM64 runner
         shell: bash
