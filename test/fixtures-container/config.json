@@ -1,0 +1,9 @@
+{
+  "mappings": [
+    {
+      "sourceDeviceName": "CI Home Coach",
+      "targetHomeName": "CI Home",
+      "targetRoomName": "CI Room"
+    }
+  ]
+}

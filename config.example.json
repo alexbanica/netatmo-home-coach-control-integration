@@ -1,0 +1,9 @@
+{
+  "mappings": [
+    {
+      "sourceDeviceName": "Home Coach Living Room",
+      "targetHomeName": "Example Home",
+      "targetRoomName": "Living Room"
+    }
+  ]
+}
