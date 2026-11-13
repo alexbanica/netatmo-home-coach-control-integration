@@ -1,0 +1,1 @@
+# netatmo-home-coach-control-integration
