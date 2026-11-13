@@ -289,7 +289,6 @@ temporary Docker credentials are logged out and removed after the job.
 Repository secrets `FORGEJO_REGISTRY_USERNAME` and `FORGEJO_REGISTRY_TOKEN`
 must be configured with permission to push to the `alexlab` namespace on
 `forgejo.alexlab.nl`. Never place secret values in source, commands, or logs.
-This repository currently has no configured repository-level secret names.
 Publication has not been performed: it requires those credentials and a
 selected, authorized release tag pointing at a commit that contains the
 publisher workflow. The workflow itself neither creates that tag nor grants
