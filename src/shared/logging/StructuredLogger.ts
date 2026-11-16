@@ -9,11 +9,23 @@ const SAFE_CODES = new Set([
   "INVALID_JSON", "UNEXPECTED_SUCCESS_BODY", "CALIBRATION_REJECTED", "TOKEN_NOT_FOUND", "CSRF_INVALID", "HTTP_STATUS"
 ]);
 const LEVELS = new Set(["debug", "info", "warn", "error"]);
+const LEVEL_PRIORITY: Readonly<Record<string, number>> = { debug: 10, info: 20, warn: 30, error: 40 };
 const REDIRECT_REASONS = new Set(["invalid_url", "scheme", "host", "credentials", "port", "post_origin", "body_forwarding", "missing_location"]);
 const SAFE_REDIRECT_HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
 export class StructuredLogger implements LoggerInterface {
-  constructor(private readonly sink: (line: string) => void = (line) => console.log(line)) {}
+  private readonly minimumLevel: string;
+
+  constructor(
+    private readonly sink: (line: string) => void = (line) => console.log(line),
+    minimumLevel: string | undefined = "info"
+  ) {
+    this.minimumLevel = typeof minimumLevel === "string" && LEVELS.has(minimumLevel) ? minimumLevel : "info";
+  }
+
   log(event: Readonly<Record<string, unknown>>): void {
+    const eventLevel = typeof event.level === "string" && LEVELS.has(event.level) ? event.level : "info";
+    if (LEVEL_PRIORITY[eventLevel]! < LEVEL_PRIORITY[this.minimumLevel]!) return;
+
     const record: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(event)) {
       if (!ALLOWED_FIELDS.has(key) || value === undefined || value === null) continue;

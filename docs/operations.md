@@ -121,6 +121,11 @@ hostname alone. Paths, query strings, URL credentials, cookies, tokens and
 response bodies are not logged. These diagnostics add no retries or session
 persistence.
 
+Set `LOG_LEVEL=debug` to emit these authentication and calibration diagnostics.
+The default is `info`, which hides debug events while retaining informational,
+warning and error records. Supported levels are `debug`, `info`, `warn` and
+`error`; an unset or unrecognized value uses `info`.
+
 ## Keep credentials private
 
 The checked-in `.env.example` contains placeholders only. Create a private

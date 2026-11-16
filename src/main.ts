@@ -21,7 +21,7 @@ function startupOutcome(error: unknown): string {
 }
 
 export async function main(options: { env?: NodeJS.ProcessEnv; cwd?: string } = {}): Promise<number> {
-  const logger = new StructuredLogger();
+  const logger = new StructuredLogger(undefined, (options.env ?? process.env).LOG_LEVEL);
   const clock = new SystemClock();
   const controller = new AbortController();
   let listenerFailed = false;

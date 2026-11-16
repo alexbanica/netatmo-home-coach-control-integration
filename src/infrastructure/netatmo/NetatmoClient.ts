@@ -109,7 +109,7 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
   }
 
   #diagnostic(event: string, outcome: string, errorCode?: string): void {
-    try { this.#logger?.log({ event, outcome, ...(errorCode ? { errorCode } : {}) }); }
+    try { this.#logger?.log({ level: "debug", event, outcome, ...(errorCode ? { errorCode } : {}) }); }
     catch { /* diagnostics must never affect synchronization */ }
   }
 

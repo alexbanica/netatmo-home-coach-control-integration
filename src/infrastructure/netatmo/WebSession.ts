@@ -93,6 +93,7 @@ export class WebSession {
   #log(stage: AuthStage, transition: "started" | "succeeded" | "failed" | "reused", errorCode?: string): void {
     try {
       this.#logger?.log({
+        level: "debug",
         event: `netatmo.web_auth.${stage}.${transition}`,
         outcome: transition === "reused" ? "cached_token" : transition,
         ...(errorCode ? { errorCode } : {})
@@ -103,7 +104,7 @@ export class WebSession {
   #logTransportFailure(error: unknown): void {
     const candidate = typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
     const errorCode = isRateLimited(error) ? "WEB_RATE_LIMITED" : candidate && SAFE_AUTH_CODES.has(candidate) ? candidate : "WEB_TRANSPORT_ERROR";
-    try { this.#logger?.log({ event: "netatmo.web_auth.transport.failed", outcome: "failed", errorCode }); }
+    try { this.#logger?.log({ level: "debug", event: "netatmo.web_auth.transport.failed", outcome: "failed", errorCode }); }
     catch { /* diagnostics must never affect authentication */ }
   }
 
@@ -111,6 +112,7 @@ export class WebSession {
     if (!REDIRECT_REJECTION_REASONS.has(reason)) return;
     try {
       this.#logger?.log({
+        level: "debug",
         event: "netatmo.web_auth.redirect.rejected",
         outcome: "rejected",
         redirectReason: reason,
@@ -290,7 +292,7 @@ export class WebSession {
     response = await this.#stage("password_submission", () => this.#request(`${AUTH_ORIGIN}/access/postlogin`, {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form.toString(), signal,
       onInitialResponse: (status) => {
-        try { this.#logger?.log({ event: "netatmo.web_auth.password_submission.response", outcome: "response_received", errorCode: `HTTP_${status}` }); }
+        try { this.#logger?.log({ level: "debug", event: "netatmo.web_auth.password_submission.response", outcome: "response_received", errorCode: `HTTP_${status}` }); }
         catch { /* diagnostics must never affect authentication */ }
       }
     }), (result) => {
