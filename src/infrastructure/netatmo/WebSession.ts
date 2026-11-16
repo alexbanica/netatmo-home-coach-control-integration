@@ -4,7 +4,7 @@ import { HttpError } from "../http/HttpError.js";
 import { WebSessionError } from "./WebSessionError.js";
 import type { LoggerInterface } from "../../shared/logging/interfaces/LoggerInterface.js";
 
-const ALLOWED_HOSTS = ["auth.netatmo.com", "my.netatmo.com", "app.netatmo.net"] as const;
+const ALLOWED_HOSTS = ["auth.netatmo.com", "my.netatmo.com", "app.netatmo.net", "home.netatmo.com"] as const;
 const ALLOWED_HOST_SET: ReadonlySet<string> = new Set(ALLOWED_HOSTS);
 const AUTH_ORIGIN = "https://auth.netatmo.com";
 const USER_AGENT = "netatmo-home";
