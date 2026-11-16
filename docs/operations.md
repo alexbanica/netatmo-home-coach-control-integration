@@ -115,8 +115,11 @@ request was attempted; its success event records an accepted API response, not
 physical heating behavior. Existing `ERR_NETWORK` mapping outcomes remain a
 generic service classification and do not by themselves identify a network
 failure. Diagnostics contain bounded stage, outcome, safe error category and
-HTTP status fields only; they do not log credentials, cookies, tokens or response
-bodies. They add no retries or session persistence.
+HTTP status fields only. A rejected redirect additionally records a fixed
+rejection reason and, when it is a credential-free ASCII DNS hostname, that
+hostname alone. Paths, query strings, URL credentials, cookies, tokens and
+response bodies are not logged. These diagnostics add no retries or session
+persistence.
 
 ## Keep credentials private
 

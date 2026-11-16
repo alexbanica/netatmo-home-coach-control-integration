@@ -31,9 +31,25 @@ const SAFE_AUTH_CODES = new Set([
   "EMETHOD", "EREDIRECTLIMIT", "EREDIRECTHOST", "EREDIRECTCREDENTIALS"
 ]);
 
-function safeUrl(value: string | URL): URL {
-  const url = new URL(value);
-  if (url.protocol !== "https:" || !ALLOWED_HOST_SET.has(url.hostname) || url.username || url.password || (url.port && url.port !== "443")) {
+type RedirectRejectionReason = "invalid_url" | "scheme" | "host" | "credentials" | "port" | "post_origin" | "body_forwarding" | "missing_location";
+const REDIRECT_REJECTION_REASONS = new Set<RedirectRejectionReason>(["invalid_url", "scheme", "host", "credentials", "port", "post_origin", "body_forwarding", "missing_location"]);
+const SAFE_DNS_NAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
+
+function safeUrl(value: string | URL, onRejected?: (reason: RedirectRejectionReason, host?: string) => void): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch (error: unknown) {
+    onRejected?.("invalid_url");
+    throw error;
+  }
+  let reason: RedirectRejectionReason | undefined;
+  if (url.protocol !== "https:") reason = "scheme";
+  else if (!ALLOWED_HOST_SET.has(url.hostname)) reason = "host";
+  else if (url.username || url.password) reason = "credentials";
+  else if (url.port && url.port !== "443") reason = "port";
+  if (reason) {
+    onRejected?.(reason, !url.username && !url.password && SAFE_DNS_NAME.test(url.hostname) ? url.hostname : undefined);
     throw new WebSessionError("Web authentication redirect host is not permitted", "REDIRECT_REJECTED");
   }
   return url;
@@ -89,6 +105,18 @@ export class WebSession {
     const errorCode = isRateLimited(error) ? "WEB_RATE_LIMITED" : candidate && SAFE_AUTH_CODES.has(candidate) ? candidate : "WEB_TRANSPORT_ERROR";
     try { this.#logger?.log({ event: "netatmo.web_auth.transport.failed", outcome: "failed", errorCode }); }
     catch { /* diagnostics must never affect authentication */ }
+  }
+
+  #logRedirectRejection(reason: RedirectRejectionReason, host?: string): void {
+    if (!REDIRECT_REJECTION_REASONS.has(reason)) return;
+    try {
+      this.#logger?.log({
+        event: "netatmo.web_auth.redirect.rejected",
+        outcome: "rejected",
+        redirectReason: reason,
+        ...(host && SAFE_DNS_NAME.test(host) ? { redirectHost: host } : {})
+      });
+    } catch { /* diagnostics must never affect authentication */ }
   }
 
   async #stage<T>(stage: AuthStage, operation: () => Promise<T>, validate?: (value: T) => string | undefined): Promise<T> {
@@ -156,13 +184,14 @@ export class WebSession {
   }
 
   async #request(startUrl: string | URL, { method = "GET", headers = {}, body, signal, onInitialResponse }: WebRequestOptions = {}): Promise<HttpResponse> {
-    let url = safeUrl(startUrl);
+    let url = safeUrl(startUrl, (reason, host) => this.#logRedirectRejection(reason, host));
     let currentMethod = method;
     let currentBody = body;
     const currentHeaders: Record<string, string> = { "user-agent": USER_AGENT, ...headers };
     let responseObserved = false;
     for (let hops = 0; hops <= 10; hops += 1) {
       if (currentMethod.toUpperCase() === "POST" && url.origin !== AUTH_ORIGIN) {
+        this.#logRedirectRejection("post_origin", url.username || url.password ? undefined : url.hostname);
         throw new WebSessionError("Refusing to submit login credentials outside auth.netatmo.com", "REDIRECT_REJECTED");
       }
       const cookie = await this.#jar.getCookieString(url.href);
@@ -198,11 +227,22 @@ export class WebSession {
       }
       if (![301, 302, 303, 307, 308].includes(response.status)) return response;
       const location = response.headers.get("location");
-      if (!location) throw new WebSessionError("Authentication redirect has no location", "REDIRECT_INVALID");
+      if (!location) {
+        this.#logRedirectRejection("missing_location");
+        throw new WebSessionError("Authentication redirect has no location", "REDIRECT_INVALID");
+      }
       if (hops === 10) throw new WebSessionError("Too many authentication redirects", "REDIRECT_LIMIT");
-      const next = safeUrl(new URL(location, url));
+      let redirectTarget: URL;
+      try {
+        redirectTarget = new URL(location, url);
+      } catch (error: unknown) {
+        this.#logRedirectRejection("invalid_url");
+        throw error;
+      }
+      const next = safeUrl(redirectTarget, (reason, host) => this.#logRedirectRejection(reason, host));
       const crossOrigin = next.origin !== url.origin;
       if (crossOrigin && [307, 308].includes(response.status) && currentBody !== undefined) {
+        this.#logRedirectRejection("body_forwarding", next.username || next.password ? undefined : next.hostname);
         throw new WebSessionError("Refusing to forward an authentication request body across origins", "REDIRECT_REJECTED");
       }
       if (response.status === 303 || ([301, 302].includes(response.status) && currentMethod.toUpperCase() === "POST")) {
