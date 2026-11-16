@@ -1,5 +1,6 @@
 import type { CalibrationRequest, SynchronizationGatewayInterface } from "../../application/ports/SynchronizationGatewayInterface.js";
 import { NetatmoApiError } from "./NetatmoApiError.js";
+import type { LoggerInterface } from "../../shared/logging/interfaces/LoggerInterface.js";
 
 const API_BASE = "https://api.netatmo.com/api";
 const APP_BASE = "https://app.netatmo.net/api";
@@ -40,6 +41,7 @@ interface NetatmoClientOptions {
   readonly oauthClient: OAuthClientLike;
   readonly webSession: WebSessionLike;
   readonly httpClient: HttpClientLike;
+  readonly logger?: LoggerInterface;
 }
 
 interface ApiErrorBody {
@@ -94,14 +96,30 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
   readonly #web: WebSessionLike;
   readonly #http: HttpClientLike;
   #verifiedToken: string | undefined;
+  readonly #logger: LoggerInterface | undefined;
 
-  constructor({ oauthClient, webSession, httpClient }: NetatmoClientOptions) {
+  constructor({ oauthClient, webSession, httpClient, logger }: NetatmoClientOptions) {
     if (!oauthClient || typeof oauthClient.request !== "function") throw new TypeError("oauthClient.request is required");
     if (!webSession || typeof webSession.getAccessToken !== "function") throw new TypeError("webSession.getAccessToken is required");
     if (!httpClient || typeof httpClient.request !== "function") throw new TypeError("httpClient.request is required");
     this.#oauth = oauthClient;
     this.#web = webSession;
     this.#http = httpClient;
+    this.#logger = logger;
+  }
+
+  #diagnostic(event: string, outcome: string, errorCode?: string): void {
+    try { this.#logger?.log({ level: "debug", event, outcome, ...(errorCode ? { errorCode } : {}) }); }
+    catch { /* diagnostics must never affect synchronization */ }
+  }
+
+  #safeErrorCode(error: unknown): string {
+    if (!isRecord(error)) return "WEB_SESSION_INVALID";
+    const code = error.code;
+    if (typeof code === "number" && Number.isInteger(code) && code >= 0 && code <= 999999) return `API_${code}`;
+    const safe = new Set(["ETIMEDOUT", "ECONNRESET", "EAI_AGAIN", "ENOTFOUND", "ENETWORK", "EABORTED", "EHOST", "EURL", "EHEADERS", "EOPTIONS", "EMETHOD", "EREDIRECTLIMIT", "EREDIRECTHOST", "EREDIRECTCREDENTIALS", "WEB_TRANSPORT_ERROR", "WEB_RATE_LIMITED", "REDIRECT_REJECTED", "REDIRECT_INVALID", "REDIRECT_LIMIT", "AUTH_CHALLENGE", "LOGIN_LIMIT", "WEB_SESSION_INVALID", "CSRF_INVALID", "TOKEN_NOT_FOUND", "INVALID_JSON"]);
+    if (typeof code === "string" && safe.has(code)) return code;
+    return typeof error.status === "number" && Number.isInteger(error.status) && error.status >= 100 && error.status <= 599 ? `HTTP_${error.status}` : "WEB_SESSION_INVALID";
   }
 
   beginCycle(): void {
@@ -138,27 +156,36 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
   async #webToken({ signal }: { readonly signal?: AbortSignal } = {}): Promise<string> {
     const token = await this.#web.getAccessToken({ signal });
     if (token !== this.#verifiedToken) {
-      const response = await this.#http.request(`${APP_BASE}/homesdata`, {
-        method: "GET",
-        headers: { authorization: `Bearer ${token}` },
-        signal,
-        allowedHosts: APP_HOSTS,
-        redirect: "manual"
-      });
-      let body: unknown;
+      const stage = "netatmo.web_auth.session_verification";
+      this.#diagnostic(`${stage}.started`, "started");
       try {
-        body = JSON.parse(response.text) as unknown;
-      } catch {
-        throw new NetatmoApiError("Web session verification returned invalid JSON", { code: "INVALID_JSON", status: response.status });
+        const response = await this.#http.request(`${APP_BASE}/homesdata`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${token}` },
+          signal,
+          allowedHosts: APP_HOSTS,
+          redirect: "manual"
+        });
+        this.#diagnostic(`${stage}.response`, "response_received", `HTTP_${response.status}`);
+        let body: unknown;
+        try {
+          body = JSON.parse(response.text) as unknown;
+        } catch {
+          throw new NetatmoApiError("Web session verification returned invalid JSON", { code: "INVALID_JSON", status: response.status });
+        }
+        const error = errorDetails(body);
+        const responseBody = isRecord(body) && isRecord(body.body) ? body.body : undefined;
+        if (response.status !== 200 || hasApiError(body) || !Array.isArray(responseBody?.homes)) {
+          if (response.status === 401 || isInvalidSessionMessage(error?.message)) this.#web.invalidate?.();
+          throw new NetatmoApiError("Web session could not access the Netatmo app API", { status: response.status, code: "WEB_SESSION_INVALID" });
+        }
+        this.#verifiedToken = token;
+        this.#diagnostic(`${stage}.succeeded`, "succeeded", `HTTP_${response.status}`);
+      } catch (error: unknown) {
+        this.#diagnostic(`${stage}.failed`, "failed", this.#safeErrorCode(error));
+        throw error;
       }
-      const error = errorDetails(body);
-      const responseBody = isRecord(body) && isRecord(body.body) ? body.body : undefined;
-      if (response.status !== 200 || hasApiError(body) || !Array.isArray(responseBody?.homes)) {
-        if (response.status === 401 || isInvalidSessionMessage(error?.message)) this.#web.invalidate?.();
-        throw new NetatmoApiError("Web session could not access the Netatmo app API", { status: response.status, code: "WEB_SESSION_INVALID" });
-      }
-      this.#verifiedToken = token;
-    }
+    } else this.#diagnostic("netatmo.web_auth.session_verification.reused", "cached_verification");
     return token;
   }
 
@@ -173,6 +200,7 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
       });
     }
     let response: HttpResponse;
+    this.#diagnostic("netatmo.calibration_write.started", "started");
     try {
       response = await this.#http.request(`${APP_BASE}/truetemperature`, {
         method: "POST",
@@ -183,6 +211,7 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
         redirect: "manual"
       });
     } catch (error: unknown) {
+      this.#diagnostic("netatmo.calibration_write.failed", "failed", this.#safeErrorCode(error));
       throw new NetatmoApiError("True Temperature write outcome is indeterminate", {
         status: isRecord(error) && typeof error.status === "number" ? error.status : undefined,
         code: "WRITE_TRANSPORT_ERROR",
@@ -194,14 +223,17 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
     try {
       body = JSON.parse(response.text) as unknown;
     } catch {
+      this.#diagnostic("netatmo.calibration_write.failed", "failed", "INVALID_JSON");
       throw new NetatmoApiError("True Temperature write returned invalid JSON", { status: response.status, code: "INVALID_JSON", outcome: "indeterminate" });
     }
     const error = errorDetails(body);
     if (response.status === 406 && error?.code === 7 && error.message === "Nothing to modify") {
+      this.#diagnostic("netatmo.calibration_write.no_op", "no_op", "HTTP_406");
       return { outcome: "no-op", status: response.status, code: 7 };
     }
     if (response.status === 401 || isInvalidSessionMessage(error?.message)) this.#web.invalidate?.();
     if (response.status < 200 || response.status >= 300 || hasApiError(body)) {
+      this.#diagnostic("netatmo.calibration_write.failed", "failed", response.status >= 100 && response.status <= 599 ? `HTTP_${response.status}` : "CALIBRATION_REJECTED");
       const outcome = response.status >= 500 || response.status === 401 ? "indeterminate" : "failed";
       const retryAfter = response.headers?.get("retry-after");
       throw new NetatmoApiError("True Temperature write was not confirmed", {
@@ -211,7 +243,11 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
         retryAfterMs: retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined
       });
     }
-    if (isRecord(body) && body.status === "ok") return { outcome: "updated", status: response.status };
+    if (isRecord(body) && body.status === "ok") {
+      this.#diagnostic("netatmo.calibration_write.succeeded", "succeeded", `HTTP_${response.status}`);
+      return { outcome: "updated", status: response.status };
+    }
+    this.#diagnostic("netatmo.calibration_write.failed", "failed", "UNEXPECTED_SUCCESS_BODY");
     throw new NetatmoApiError("True Temperature write response was not a recognized success", { status: response.status, code: "UNEXPECTED_SUCCESS_BODY", outcome: "indeterminate" });
   }
 }
