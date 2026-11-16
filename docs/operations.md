@@ -106,6 +106,18 @@ acceptance. MFA, CAPTCHA or other changed login challenges are unsupported:
 the service stops the login attempt and does not bypass them. Changes to the
 undocumented flow can require a code update.
 
+Authentication diagnostics use events under `netatmo.web_auth.*` to identify
+login-cycle reuse and progress through the login page, CSRF, password submission,
+keychain, token extraction and session verification stages. Calibration request
+diagnostics use `netatmo.calibration_write.*`. Compare the stage events with
+`sync.mapping.*` outcomes: a calibration-write start means the temperature-setting
+request was attempted; its success event records an accepted API response, not
+physical heating behavior. Existing `ERR_NETWORK` mapping outcomes remain a
+generic service classification and do not by themselves identify a network
+failure. Diagnostics contain bounded stage, outcome, safe error category and
+HTTP status fields only; they do not log credentials, cookies, tokens or response
+bodies. They add no retries or session persistence.
+
 ## Keep credentials private
 
 The checked-in `.env.example` contains placeholders only. Create a private

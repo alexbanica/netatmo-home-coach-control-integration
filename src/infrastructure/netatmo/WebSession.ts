@@ -2,6 +2,7 @@ import { CookieJar } from "tough-cookie";
 import type { HttpClient, HttpRequestOptions, HttpResponse } from "../http/HttpClient.js";
 import { HttpError } from "../http/HttpError.js";
 import { WebSessionError } from "./WebSessionError.js";
+import type { LoggerInterface } from "../../shared/logging/interfaces/LoggerInterface.js";
 
 const ALLOWED_HOSTS = ["auth.netatmo.com", "my.netatmo.com", "app.netatmo.net"] as const;
 const ALLOWED_HOST_SET: ReadonlySet<string> = new Set(ALLOWED_HOSTS);
@@ -11,6 +12,7 @@ const USER_AGENT = "netatmo-home";
 type LoginOptions = { signal?: AbortSignal };
 type WebRequestOptions = Omit<HttpRequestOptions, "allowedHosts" | "redirect" | "headers"> & {
   headers?: Record<string, string>;
+  onInitialResponse?: (status: number) => void;
 };
 export type VerifyAccessToken = (token: string, options?: LoginOptions) => Promise<void>;
 export type WebSessionOptions = {
@@ -18,7 +20,16 @@ export type WebSessionOptions = {
   username: string;
   password: string;
   verifyAccessToken?: VerifyAccessToken;
+  logger?: LoggerInterface;
 };
+
+type AuthStage = "login_cycle" | "login_page" | "csrf" | "password_submission" | "keychain" | "token_extraction" | "session_verification";
+const SAFE_AUTH_CODES = new Set([
+  "WEB_TRANSPORT_ERROR", "WEB_RATE_LIMITED", "REDIRECT_REJECTED", "REDIRECT_INVALID", "REDIRECT_LIMIT",
+  "AUTH_CHALLENGE", "LOGIN_LIMIT", "WEB_SESSION_INVALID", "HTTP_STATUS", "ETIMEDOUT", "ECONNRESET",
+  "EAI_AGAIN", "ENOTFOUND", "ENETWORK", "EABORTED", "EHOST", "EURL", "EHEADERS", "EOPTIONS",
+  "EMETHOD", "EREDIRECTLIMIT", "EREDIRECTHOST", "EREDIRECTCREDENTIALS"
+]);
 
 function safeUrl(value: string | URL): URL {
   const url = new URL(value);
@@ -50,8 +61,9 @@ export class WebSession {
   #invalidated = false;
   #verified = false;
   #verify: VerifyAccessToken | undefined;
+  #logger: LoggerInterface | undefined;
 
-  constructor({ httpClient, username, password, verifyAccessToken }: WebSessionOptions) {
+  constructor({ httpClient, username, password, verifyAccessToken, logger }: WebSessionOptions) {
     if (!httpClient?.request) throw new TypeError("httpClient.request is required");
     if (!username || !password) throw new TypeError("Web-session username and password are required");
     this.#http = httpClient;
@@ -59,6 +71,43 @@ export class WebSession {
     this.#password = password;
     this.#jar = new CookieJar();
     this.#verify = verifyAccessToken;
+    this.#logger = logger;
+  }
+
+  #log(stage: AuthStage, transition: "started" | "succeeded" | "failed" | "reused", errorCode?: string): void {
+    try {
+      this.#logger?.log({
+        event: `netatmo.web_auth.${stage}.${transition}`,
+        outcome: transition === "reused" ? "cached_token" : transition,
+        ...(errorCode ? { errorCode } : {})
+      });
+    } catch { /* diagnostics must never affect authentication */ }
+  }
+
+  #logTransportFailure(error: unknown): void {
+    const candidate = typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
+    const errorCode = isRateLimited(error) ? "WEB_RATE_LIMITED" : candidate && SAFE_AUTH_CODES.has(candidate) ? candidate : "WEB_TRANSPORT_ERROR";
+    try { this.#logger?.log({ event: "netatmo.web_auth.transport.failed", outcome: "failed", errorCode }); }
+    catch { /* diagnostics must never affect authentication */ }
+  }
+
+  async #stage<T>(stage: AuthStage, operation: () => Promise<T>, validate?: (value: T) => string | undefined): Promise<T> {
+    this.#log(stage, "started");
+    try {
+      const value = await operation();
+      const errorCode = validate?.(value);
+      if (errorCode) {
+        this.#log(stage, "failed", errorCode);
+        return value;
+      }
+      this.#log(stage, "succeeded");
+      return value;
+    } catch (error: unknown) {
+      const candidate = typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
+      const status = typeof error === "object" && error !== null && "status" in error && typeof error.status === "number" && Number.isInteger(error.status) ? `HTTP_${error.status}` : undefined;
+      this.#log(stage, "failed", status ?? (candidate && SAFE_AUTH_CODES.has(candidate) ? candidate : "WEB_SESSION_INVALID"));
+      throw error;
+    }
   }
 
   /** Starts an authentication cycle. At most one password login is allowed per cycle. */
@@ -79,26 +128,39 @@ export class WebSession {
 
   async getAccessToken({ signal }: LoginOptions = {}): Promise<string> {
     if (this.#token && !this.#invalidated) {
+      this.#log("login_cycle", "reused");
       if (!this.#verified && this.#verify) {
-        await this.#verify(this.#token, { signal });
+        await this.#stage("session_verification", () => this.#verify!(this.#token!, { signal }));
         this.#verified = true;
       }
       return this.#token;
     }
-    if (this.#attempted) throw new WebSessionError("Web login already attempted during this cycle", "LOGIN_LIMIT");
+    if (this.#attempted) {
+      this.#log("login_cycle", "failed", "LOGIN_LIMIT");
+      throw new WebSessionError("Web login already attempted during this cycle", "LOGIN_LIMIT");
+    }
+    this.#log("login_cycle", "started");
     this.#attempted = true;
     this.#invalidated = false;
-    this.#token = await this.#login(signal);
-    if (this.#verify) await this.#verify(this.#token, { signal });
+    try {
+      this.#token = await this.#login(signal);
+      if (this.#verify) await this.#stage("session_verification", () => this.#verify!(this.#token!, { signal }));
+      this.#log("login_cycle", "succeeded");
+    } catch (error: unknown) {
+      const candidate = typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
+      this.#log("login_cycle", "failed", candidate && SAFE_AUTH_CODES.has(candidate) ? candidate : "WEB_SESSION_INVALID");
+      throw error;
+    }
     this.#verified = true;
     return this.#token;
   }
 
-  async #request(startUrl: string | URL, { method = "GET", headers = {}, body, signal }: WebRequestOptions = {}): Promise<HttpResponse> {
+  async #request(startUrl: string | URL, { method = "GET", headers = {}, body, signal, onInitialResponse }: WebRequestOptions = {}): Promise<HttpResponse> {
     let url = safeUrl(startUrl);
     let currentMethod = method;
     let currentBody = body;
     const currentHeaders: Record<string, string> = { "user-agent": USER_AGENT, ...headers };
+    let responseObserved = false;
     for (let hops = 0; hops <= 10; hops += 1) {
       if (currentMethod.toUpperCase() === "POST" && url.origin !== AUTH_ORIGIN) {
         throw new WebSessionError("Refusing to submit login credentials outside auth.netatmo.com", "REDIRECT_REJECTED");
@@ -118,6 +180,7 @@ export class WebSession {
           redirect: "manual"
         });
       } catch (error: unknown) {
+        this.#logTransportFailure(error);
         if (isRateLimited(error)) {
           throw new WebSessionError("Netatmo authentication request was rate limited", "WEB_RATE_LIMITED", {
             status: 429,
@@ -125,6 +188,10 @@ export class WebSession {
           });
         }
         throw new WebSessionError("Netatmo authentication request failed", "WEB_TRANSPORT_ERROR");
+      }
+      if (!responseObserved) {
+        responseObserved = true;
+        try { onInitialResponse?.(response.status); } catch { /* diagnostics must never affect authentication */ }
       }
       for (const setCookie of getSetCookies(response.headers)) {
         try { await this.#jar.setCookie(setCookie, url.href, { ignoreError: false }); } catch { /* malformed cookies are ignored */ }
@@ -156,12 +223,21 @@ export class WebSession {
 
   async #login(signal?: AbortSignal): Promise<string> {
     this.#jar = new CookieJar();
-    let response = await this.#request(`${AUTH_ORIGIN}/en-us/access/login`, { signal });
+    let response = await this.#stage("login_page", () => this.#request(`${AUTH_ORIGIN}/en-us/access/login`, { signal }), (result) => {
+      if (result.status < 200 || result.status >= 400) return `HTTP_${result.status}`;
+      return this.#hasChallenge(result.text) ? "AUTH_CHALLENGE" : undefined;
+    });
     if (response.status < 200 || response.status >= 400) throw new WebSessionError("Could not load Netatmo login page");
     if (this.#hasChallenge(response.text)) throw new WebSessionError("Netatmo login requires an unsupported challenge", "AUTH_CHALLENGE");
     await this.#jar.setCookie("netatmocomlast_app_used=app_thermostat; Domain=.netatmo.com; Path=/; Secure", AUTH_ORIGIN);
 
-    response = await this.#request(`${AUTH_ORIGIN}/access/csrf`, { signal });
+    response = await this.#stage("csrf", () => this.#request(`${AUTH_ORIGIN}/access/csrf`, { signal }), (result) => {
+      if (result.status !== 200) return `HTTP_${result.status}`;
+      try {
+        const parsed: unknown = JSON.parse(result.text);
+        return typeof parsed === "object" && parsed !== null && "token" in parsed && typeof parsed.token === "string" && parsed.token.length > 0 ? undefined : "CSRF_INVALID";
+      } catch { return "CSRF_INVALID"; }
+    });
     if (response.status !== 200) throw new WebSessionError("Could not retrieve Netatmo login token");
     let csrf: string | undefined;
     try {
@@ -171,27 +247,41 @@ export class WebSession {
     if (typeof csrf !== "string" || csrf.length === 0) throw new WebSessionError("Netatmo login token response was invalid");
 
     const form = new URLSearchParams({ email: this.#username, password: this.#password, stay_logged: "on", _token: csrf });
-    response = await this.#request(`${AUTH_ORIGIN}/access/postlogin`, {
-      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form.toString(), signal
+    response = await this.#stage("password_submission", () => this.#request(`${AUTH_ORIGIN}/access/postlogin`, {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form.toString(), signal,
+      onInitialResponse: (status) => {
+        try { this.#logger?.log({ event: "netatmo.web_auth.password_submission.response", outcome: "response_received", errorCode: `HTTP_${status}` }); }
+        catch { /* diagnostics must never affect authentication */ }
+      }
+    }), (result) => {
+      if (result.status < 200 || result.status >= 400) return `HTTP_${result.status}`;
+      return this.#hasChallenge(result.text) ? "AUTH_CHALLENGE" : undefined;
     });
     if (response.status < 200 || response.status >= 400) throw new WebSessionError("Netatmo login was rejected");
     if (this.#hasChallenge(response.text)) {
       throw new WebSessionError("Netatmo login requires an unsupported challenge", "AUTH_CHALLENGE");
     }
 
-    response = await this.#request(`${AUTH_ORIGIN}/access/keychain?next_url=${encodeURIComponent("https://my.netatmo.com")}`, { signal });
+    response = await this.#stage("keychain", () => this.#request(`${AUTH_ORIGIN}/access/keychain?next_url=${encodeURIComponent("https://my.netatmo.com")}`, { signal }), (result) => {
+      if (result.status < 200 || result.status >= 400) return `HTTP_${result.status}`;
+      return this.#hasChallenge(result.text) ? "AUTH_CHALLENGE" : undefined;
+    });
     if (response.status < 200 || response.status >= 400) throw new WebSessionError("Netatmo keychain exchange failed");
     if (this.#hasChallenge(response.text)) throw new WebSessionError("Netatmo login requires an unsupported challenge", "AUTH_CHALLENGE");
-    for (const host of ["https://auth.netatmo.com/", "https://my.netatmo.com/", "https://app.netatmo.net/"]) {
-      const cookies = await this.#jar.getCookies(host);
-      const found = cookies.find((cookie) => cookie.key === "netatmocomaccess_token");
-      if (found?.value) {
-        let token = found.value;
-        try { token = decodeURIComponent(token); } catch { /* retain cookie value if malformed */ }
-        if (token && !/[\r\n]/.test(token)) return token;
+    const token = await this.#stage("token_extraction", async () => {
+      for (const host of ["https://auth.netatmo.com/", "https://my.netatmo.com/", "https://app.netatmo.net/"]) {
+        const cookies = await this.#jar.getCookies(host);
+        const found = cookies.find((cookie) => cookie.key === "netatmocomaccess_token");
+        if (found?.value) {
+          let token = found.value;
+          try { token = decodeURIComponent(token); } catch { /* retain cookie value if malformed */ }
+          if (token && !/[\r\n]/.test(token)) return token;
+        }
       }
-    }
-    throw new WebSessionError("Netatmo login did not produce an access token");
+      return undefined;
+    }, (value) => value ? undefined : "TOKEN_NOT_FOUND");
+    if (!token) throw new WebSessionError("Netatmo login did not produce an access token");
+    return token;
   }
 
   #hasChallenge(text: string): boolean {

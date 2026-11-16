@@ -1,6 +1,13 @@
 import type { LoggerInterface } from "./interfaces/LoggerInterface.js";
 const ALLOWED_FIELDS = new Set(["timestamp", "level", "event", "cycleId", "mapping", "outcome", "sourceDeviceName", "targetHomeName", "targetRoomName", "sourceTemperature", "currentTemperature", "correctedTemperature", "errorCode", "durationMs"]);
-const SAFE_CODES = new Set(["ETIMEDOUT", "ECONNRESET", "EAI_AGAIN", "ENOTFOUND", "ERR_NETWORK", "ERR_INVALID_SESSION", "ERR_RATE_LIMIT"]);
+const SAFE_CODES = new Set([
+  "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN", "ENOTFOUND", "ERR_NETWORK", "ERR_INVALID_SESSION", "ERR_RATE_LIMIT",
+  "ENETWORK", "EABORTED", "EHOST", "EURL", "EHEADERS", "EOPTIONS", "EMETHOD",
+  "EREDIRECTLIMIT", "EREDIRECTHOST", "EREDIRECTCREDENTIALS",
+  "WEB_TRANSPORT_ERROR", "WEB_RATE_LIMITED", "REDIRECT_REJECTED", "REDIRECT_INVALID", "REDIRECT_LIMIT",
+  "AUTH_CHALLENGE", "LOGIN_LIMIT", "WEB_SESSION_INVALID", "WRITE_TRANSPORT_ERROR",
+  "INVALID_JSON", "UNEXPECTED_SUCCESS_BODY", "CALIBRATION_REJECTED", "TOKEN_NOT_FOUND", "CSRF_INVALID", "HTTP_STATUS"
+]);
 const LEVELS = new Set(["debug", "info", "warn", "error"]);
 export class StructuredLogger implements LoggerInterface {
   constructor(private readonly sink: (line: string) => void = (line) => console.log(line)) {}

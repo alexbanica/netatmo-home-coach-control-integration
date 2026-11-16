@@ -16,8 +16,8 @@ export class AppFactory {
     const config: ServiceConfigurationInterface = await new EnvironmentConfigLoader().load({ env: options.env, cwd: options.cwd });
     const httpClient = new HttpClient({ fetchImpl: options.fetchImpl });
     const oauthClient = new OAuthClient({ httpClient, ...config.credentials });
-    const webSession = new WebSession({ httpClient, username: config.credentials.username, password: config.credentials.password });
-    const gateway = new NetatmoClient({ oauthClient, webSession, httpClient });
+    const webSession = new WebSession({ httpClient, username: config.credentials.username, password: config.credentials.password, logger: options.logger });
+    const gateway = new NetatmoClient({ oauthClient, webSession, httpClient, logger: options.logger });
     const service = new TemperatureSynchronizationService({ maxReadingAgeMinutes: config.maxReadingAgeMinutes, dryRun: config.dryRun, mappings: config.mappings }, gateway, options.logger, options.clock);
     const health = new ServiceHealthState(config.healthcheckMaxCycleMs, () => performance.now());
     const scheduler = new SerialScheduler({ runCycle: (input) => service.execute(input), intervalMs: config.syncIntervalMinutes * 60_000, clock: options.clock, logger: options.logger, health });
