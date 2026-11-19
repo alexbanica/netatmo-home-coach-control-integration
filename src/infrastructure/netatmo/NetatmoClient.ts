@@ -34,6 +34,7 @@ interface OAuthClientLike {
 interface WebSessionLike {
   beginCycle?(): void;
   getAccessToken(options?: { readonly signal?: AbortSignal }): Promise<string>;
+  canAttemptLogin(): boolean;
   invalidate?(): void;
 }
 
@@ -96,11 +97,13 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
   readonly #web: WebSessionLike;
   readonly #http: HttpClientLike;
   #verifiedToken: string | undefined;
+  #recoveryAttempted = false;
   readonly #logger: LoggerInterface | undefined;
 
   constructor({ oauthClient, webSession, httpClient, logger }: NetatmoClientOptions) {
     if (!oauthClient || typeof oauthClient.request !== "function") throw new TypeError("oauthClient.request is required");
     if (!webSession || typeof webSession.getAccessToken !== "function") throw new TypeError("webSession.getAccessToken is required");
+    if (typeof webSession.canAttemptLogin !== "function") throw new TypeError("webSession.canAttemptLogin is required");
     if (!httpClient || typeof httpClient.request !== "function") throw new TypeError("httpClient.request is required");
     this.#oauth = oauthClient;
     this.#web = webSession;
@@ -126,6 +129,7 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
     this.#oauth.beginCycle?.();
     this.#web.beginCycle?.();
     this.#verifiedToken = undefined;
+    this.#recoveryAttempted = false;
   }
 
   async #read(path: string, { signal }: { readonly signal?: AbortSignal } = {}): Promise<unknown> {
@@ -158,32 +162,74 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
     if (token !== this.#verifiedToken) {
       const stage = "netatmo.web_auth.session_verification";
       this.#diagnostic(`${stage}.started`, "started");
-      try {
-        const response = await this.#http.request(`${APP_BASE}/homesdata`, {
-          method: "GET",
-          headers: { authorization: `Bearer ${token}` },
-          signal,
-          allowedHosts: APP_HOSTS,
-          redirect: "manual"
-        });
-        this.#diagnostic(`${stage}.response`, "response_received", `HTTP_${response.status}`);
-        let body: unknown;
+      const verify = async (accessToken: string): Promise<{ readonly verified: true } | { readonly verified: false; readonly error: NetatmoApiError }> => {
+        let response: HttpResponse;
         try {
-          body = JSON.parse(response.text) as unknown;
-        } catch {
-          throw new NetatmoApiError("Web session verification returned invalid JSON", { code: "INVALID_JSON", status: response.status });
+          response = await this.#http.request(`${APP_BASE}/homesdata`, {
+            method: "GET",
+            headers: { authorization: `Bearer ${accessToken}` },
+            signal,
+            allowedHosts: APP_HOSTS,
+            redirect: "manual"
+          });
+        } catch (error: unknown) {
+          this.#diagnostic(`${stage}.failed`, "failed", this.#safeErrorCode(error));
+          throw error;
+        }
+        const status = responseStatus(response);
+        this.#diagnostic(`${stage}.response`, "response_received", `HTTP_${status}`);
+        const retryAfter = response.headers?.get("retry-after");
+        const retryAfterMs = retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined;
+        let body: unknown;
+        try { body = JSON.parse(response.text) as unknown; }
+        catch {
+          const invalid = new NetatmoApiError("Web session verification returned invalid JSON", { code: "INVALID_JSON", status });
+          this.#diagnostic(`${stage}.failed`, "failed", "INVALID_JSON");
+          throw invalid;
         }
         const error = errorDetails(body);
+        const invalidSessionMessage = isInvalidSessionMessage(error?.message);
+        const code13 = error?.code === 13;
+        const recoverable = status !== 429 && status < 500 && !(status >= 300 && status < 400)
+          && !code13 && (status === 401 || invalidSessionMessage);
         const responseBody = isRecord(body) && isRecord(body.body) ? body.body : undefined;
-        if (response.status !== 200 || hasApiError(body) || !Array.isArray(responseBody?.homes)) {
-          if (response.status === 401 || isInvalidSessionMessage(error?.message)) this.#web.invalidate?.();
-          throw new NetatmoApiError("Web session could not access the Netatmo app API", { status: response.status, code: "WEB_SESSION_INVALID" });
+        if (status !== 200 || hasApiError(body) || !Array.isArray(responseBody?.homes)) {
+          // Preserve baseline invalidation on parsed rejection independently of recovery eligibility.
+          if (status === 401 || invalidSessionMessage) {
+            this.#web.invalidate?.();
+            this.#verifiedToken = undefined;
+          }
+          const failure = status === 429
+            ? new NetatmoApiError("Web session verification was rate limited", { status, code: "WEB_RATE_LIMITED", retryAfterMs })
+            : new NetatmoApiError("Web session could not access the Netatmo app API", {
+                status, code: typeof error?.code === "number" && Number.isFinite(error.code) ? String(error.code) : "WEB_SESSION_INVALID", retryAfterMs
+              });
+          this.#diagnostic(`${stage}.failed`, "failed", this.#safeErrorCode(failure));
+          if (recoverable) return { verified: false, error: failure };
+          throw failure;
         }
-        this.#verifiedToken = token;
-        this.#diagnostic(`${stage}.succeeded`, "succeeded", `HTTP_${response.status}`);
-      } catch (error: unknown) {
-        this.#diagnostic(`${stage}.failed`, "failed", this.#safeErrorCode(error));
-        throw error;
+        this.#verifiedToken = accessToken;
+        this.#diagnostic(`${stage}.succeeded`, "succeeded", `HTTP_${status}`);
+        return { verified: true };
+      };
+      const verification = await verify(token);
+      if (!verification.verified) {
+        signal?.throwIfAborted();
+        if (this.#recoveryAttempted || !this.#web.canAttemptLogin()) {
+          throw verification.error;
+        }
+        this.#recoveryAttempted = true;
+        this.#diagnostic("netatmo.web_auth.prewrite_recovery.started", "started");
+        try {
+          const replacement = await this.#web.getAccessToken({ signal });
+          const replacementVerification = await verify(replacement);
+          if (!replacementVerification.verified) throw replacementVerification.error;
+          this.#diagnostic("netatmo.web_auth.prewrite_recovery.succeeded", "succeeded");
+          return replacement;
+        } catch (error: unknown) {
+          this.#diagnostic("netatmo.web_auth.prewrite_recovery.failed", "failed", this.#safeErrorCode(error));
+          throw error;
+        }
       }
     } else this.#diagnostic("netatmo.web_auth.session_verification.reused", "cached_verification");
     return token;
@@ -193,6 +239,7 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
     if (![homeId, roomId].every((value) => typeof value === "string" && value)) throw new TypeError("homeId and roomId are required");
     if (![currentTemperature, correctedTemperature].every((value) => Number.isFinite(value))) throw new TypeError("Temperatures must be finite numbers");
     const token = await this.#webToken({ signal });
+    signal?.throwIfAborted();
     if (await beforeWrite?.()) {
       throw new NetatmoApiError("True Temperature write was skipped because the source reading is stale", {
         code: "SOURCE_STALE",

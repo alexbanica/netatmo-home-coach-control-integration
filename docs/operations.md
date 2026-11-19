@@ -15,7 +15,11 @@ success response body has not been observed. The implementation's recognized
 `status: "ok"` success shape is a conservative assumption. A5 still needs an
 authorized nonzero live write plus subsequent room/app evidence. Physical
 heating response is separately unverified and must not be inferred from API
-acceptance. This delivery remains DRAFT.
+acceptance. Historical generic HTTP 403 calibration-path records do not show
+whether the rejection came from pre-write session verification or the
+calibration POST, and do not establish the cause or frequency of connection
+emails. This recovery change cannot be attributed as a fix for those incidents
+from the available logs. This delivery remains DRAFT.
 
 ## Configuration
 
@@ -98,13 +102,50 @@ this service.
 
 Calibration uses a separate direct Netatmo web login with
 `NETATMO_USERNAME` and `NETATMO_PASSWORD`. Cookies and its access token remain
-in memory. Login is attempted at most once per cycle and may be retried on a
-later scheduled cycle after an explicit invalid/expired session response; a
-write is never immediately replayed after reauthentication. Netatmo's current
-web-login flow was observed during planning, not exercised by implementation
-acceptance. MFA, CAPTCHA or other changed login challenges are unsupported:
-the service stops the login attempt and does not bypass them. Changes to the
-undocumented flow can require a code update.
+in memory. The existing password-login allowance is shared by all mappings and
+allows at most one attempt per synchronization cycle, including an initial
+login or recovery login. Separately, at most one pre-write recovery sequence is
+available per cycle; it does not reset or bypass the shared login allowance.
+The ordinary flow remains: a later mapping can use an unused login allowance
+under existing rules, and an invalidated session can be tried again in a later
+scheduled cycle.
+
+For the current mapping, same-cycle recovery is considered only when the
+read-only `homesdata` verification performed before its first calibration POST
+returns a completed response with parsed JSON that fails verification and has
+HTTP 401 or the adapter's explicit invalid/expired token or session message.
+Numeric error codes 2 or 3 alone do not trigger this web-session recovery.
+Numeric API code 13 vetoes recovery even if the status or message would
+otherwise qualify; generic HTTP 403 without an explicit invalid/expired
+message also does not trigger it. HTTP 429, HTTP 5xx, redirects, transport
+failures, malformed JSON, and structural failures without a qualifying
+authentication signal do not recover. These exclusions take precedence over
+message matching.
+
+When the recovery sequence and shared password-login allowances are available,
+the rejected token and its verification cache are invalidated, the existing
+login flow is attempted once, and the replacement token is verified once. A
+failed login or replacement verification ends that recovery attempt; it does
+not loop. If the login allowance was already consumed, no recovery login
+starts, though a qualifying rejection still invalidates the cached token for
+later scheduled recovery. After successful verification, cancellation and the
+existing source-reading freshness check run again immediately before the
+single possible calibration POST. If cancelled or stale, no POST is sent.
+Recovery never replays a POST that was already dispatched. POST failures,
+including HTTP 401/403 or an expiry-looking response, keep their existing
+outcome and invalidation behavior and do not enter this recovery path. The
+later ordinary cycle rereads target status before considering another write.
+
+The `netatmo.web_auth.prewrite_recovery.started`, `.succeeded` and `.failed`
+DEBUG events describe the bounded recovery sequence: `started` means an
+eligible recovery login is actually beginning, `succeeded` means the
+replacement token passed verification, and `failed` means that started attempt
+did not complete. They do not report calibration success. Cases where recovery
+does not start are covered by the existing verification/login diagnostics.
+Netatmo's current web-login flow was observed during planning, not exercised by
+implementation acceptance. MFA, CAPTCHA or other changed login challenges are
+unsupported: the service stops the login attempt and does not bypass them.
+Changes to the undocumented flow can require a code update.
 
 Authentication diagnostics use events under `netatmo.web_auth.*` to identify
 login-cycle reuse and progress through the login page, CSRF, password submission,
@@ -118,8 +159,8 @@ failure. Diagnostics contain bounded stage, outcome, safe error category and
 HTTP status fields only. A rejected redirect additionally records a fixed
 rejection reason and, when it is a credential-free ASCII DNS hostname, that
 hostname alone. Paths, query strings, URL credentials, cookies, tokens and
-response bodies are not logged. These diagnostics add no retries or session
-persistence.
+response bodies are not logged. These diagnostics add no session persistence;
+the bounded pre-write recovery behavior is described above.
 
 Set `LOG_LEVEL=debug` to emit these authentication and calibration diagnostics.
 The default is `info`, which hides debug events while retaining informational,

@@ -156,6 +156,11 @@ export class WebSession {
     return true;
   }
 
+  /** Whether this cycle's shared password-login allowance is still unused. */
+  canAttemptLogin(): boolean {
+    return !this.#attempted;
+  }
+
   async getAccessToken({ signal }: LoginOptions = {}): Promise<string> {
     if (this.#token && !this.#invalidated) {
       this.#log("login_cycle", "reused");
