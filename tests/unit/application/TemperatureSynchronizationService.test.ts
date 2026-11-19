@@ -123,6 +123,20 @@ test("dry-run performs reads and never writes", async () => {
   const s = setup({ dryRun: true }); assert.equal((await s.service.execute()).outcomes[0]?.reason, "dry_run"); assert.deepEqual(s.calls, ["coach", "homes", "status"]);
 });
 
+test("a throwing diagnostic logger does not change synchronization decisions or writes", async () => {
+  const s = setup();
+  const service = new TemperatureSynchronizationService(
+    { mappings: [mapping], maxReadingAgeMinutes: 15, dryRun: false },
+    s.gateway,
+    { log() { throw new Error("sink unavailable"); } },
+    { now: () => now }
+  );
+  const result = await service.execute();
+  assert.equal(result.outcomes[0]?.outcome, "updated");
+  assert.deepEqual(s.calls, ["coach", "homes", "status", "write"]);
+  assert.equal(s.requests.length, 1);
+});
+
 test("takes a new target reading on every mapping and every cycle", async () => {
   const calls: string[] = []; let statusIndex = 0;
   const gateway: SynchronizationGatewayInterface = {
