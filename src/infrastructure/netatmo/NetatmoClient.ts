@@ -162,7 +162,7 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
     if (token !== this.#verifiedToken) {
       const stage = "netatmo.web_auth.session_verification";
       this.#diagnostic(`${stage}.started`, "started");
-      const verify = async (accessToken: string): Promise<boolean> => {
+      const verify = async (accessToken: string): Promise<{ readonly verified: true } | { readonly verified: false; readonly error: NetatmoApiError }> => {
         let response: HttpResponse;
         try {
           response = await this.#http.request(`${APP_BASE}/homesdata`, {
@@ -205,23 +205,25 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
                 status, code: typeof error?.code === "number" && Number.isFinite(error.code) ? String(error.code) : "WEB_SESSION_INVALID", retryAfterMs
               });
           this.#diagnostic(`${stage}.failed`, "failed", this.#safeErrorCode(failure));
-          if (recoverable) return false;
+          if (recoverable) return { verified: false, error: failure };
           throw failure;
         }
         this.#verifiedToken = accessToken;
         this.#diagnostic(`${stage}.succeeded`, "succeeded", `HTTP_${status}`);
-        return true;
+        return { verified: true };
       };
-      if (!(await verify(token))) {
+      const verification = await verify(token);
+      if (!verification.verified) {
         signal?.throwIfAborted();
         if (this.#recoveryAttempted || !this.#web.canAttemptLogin()) {
-          throw new NetatmoApiError("Web session could not access the Netatmo app API", { code: "WEB_SESSION_INVALID" });
+          throw verification.error;
         }
         this.#recoveryAttempted = true;
         this.#diagnostic("netatmo.web_auth.prewrite_recovery.started", "started");
         try {
           const replacement = await this.#web.getAccessToken({ signal });
-          if (!(await verify(replacement))) throw new NetatmoApiError("Replacement web session was rejected", { code: "WEB_SESSION_INVALID" });
+          const replacementVerification = await verify(replacement);
+          if (!replacementVerification.verified) throw replacementVerification.error;
           this.#diagnostic("netatmo.web_auth.prewrite_recovery.succeeded", "succeeded");
           return replacement;
         } catch (error: unknown) {
