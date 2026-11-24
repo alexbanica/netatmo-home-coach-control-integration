@@ -67,7 +67,7 @@ Connection credentials and runtime settings come from environment variables.
 | `MAX_READING_AGE_MINUTES` | No | `15`; positive integer, independent of the cycle interval. |
 | `MAX_CORRECTION_C` | No | `5`°C; positive finite Celsius value in 0.1°C increments. Caps the absolute adjustment in each write. |
 | `CALIBRATION_RETRY_UNCHANGED_CYCLES` | No | `2`; positive integer count of unchanged valid room readings before another write is eligible. |
-| `CALIBRATION_STATE_FILE` | No | `./calibration-state.json`, relative to the working directory. Stores each room's last successful write's normalized pre-write temperature. |
+| `CALIBRATION_STATE_FILE` | No | `./calibration-state.json` outside the production container image; the image default is `/app/state/calibration-state.json`. Stores each room's last successful write's normalized pre-write temperature. |
 | `DRY_RUN` | No | `false`; only literal `true` or `false` is accepted. |
 
 Malformed JSON, unknown keys, duplicate targets, invalid settings, incomplete
@@ -366,8 +366,22 @@ Node 24.21 Alpine base for builder and runtime stages. It compiles the
 TypeScript application in the builder, then packages the compiled `dist/`
 output with locked production dependencies. The image runs as non-root UID
 1000 (`node`) and starts `node dist/main.js` in the foreground. It contains no
-runtime configuration or credentials. Calibration state must be kept in a
-writable persistent host directory so it survives container replacement.
+runtime configuration or credentials. The image sets
+`CALIBRATION_STATE_FILE=/app/state/calibration-state.json` and creates
+`/app/state` writable by the `node` user. With no state mount or override, the
+service can create its state file in the container's writable layer. That
+file remains across a restart of the same container, but is lost when the
+container is replaced.
+
+For state that must survive container replacement, mount a writable host
+directory and set `CALIBRATION_STATE_FILE` to a file inside that mount. The
+path must satisfy the existing state-path validation rules, and the mounted
+directory must be writable by UID 1000. The `.env.example` includes
+`CALIBRATION_STATE_FILE=./calibration-state.json`; copying it to `.env.local`
+and passing it with `--env-file` overrides the image default with a relative
+path under `/app`, which is not writable by the runtime user. For Docker,
+remove or comment out that line in `.env.local`, or override it with a path
+inside the writable state mount as in the example below.
 
 After creating and reviewing private `.env.local` and `config.json`, start
 with the environment file and a read-only config bind mount:
@@ -387,9 +401,8 @@ container runtime; do not place them in Docker build arguments, image layers,
 or command-line values. Ensure the host config file is readable by UID 1000 and
 the host `calibration-data` directory exists and is writable by UID 1000; set
 its ownership for the container's runtime user before starting. The state path
-must point inside that mounted directory. Custom `CALIBRATION_STATE_FILE`
-paths also require an explicit writable mount in a container. Run one
-container for each configuration.
+in this command points inside that mounted directory. Run one container for
+each configuration.
 
 ## CI and local checks
 
