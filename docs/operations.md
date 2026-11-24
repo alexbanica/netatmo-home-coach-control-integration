@@ -166,10 +166,46 @@ hostname alone. Paths, query strings, URL credentials, cookies, tokens and
 response bodies are not logged. These diagnostics add no session persistence;
 the bounded pre-write recovery behavior is described above.
 
-Set `LOG_LEVEL=debug` to emit these authentication and calibration diagnostics.
-The default is `info`, which hides debug events while retaining informational,
-warning and error records. Supported levels are `debug`, `info`, `warn` and
-`error`; an unset or unrecognized value uses `info`.
+Set `LOG_LEVEL=debug` to emit authentication, calibration-write, and temperature
+observation diagnostics. The observation event is
+`sync.mapping.temperature_observation`; it is emitted at most once when a mapping reaches
+the existing calibration-policy decision, before the write/no-op/skip handling.
+It contains the cycle and mapping correlation fields, an ISO `timestamp`, and
+these fields (temperature values are in °C):
+
+| Field | Meaning |
+| --- | --- |
+| `sourceTemperature` | Home Coach reference rounded to 0.1°C |
+| `currentTemperature` | Room measurement rounded to 0.1°C |
+| `correctedTemperature` | Proposed normalized calibration reference |
+| `rawSourceTemperature` | Home Coach value before service rounding |
+| `rawCurrentTemperature` | Room value before service rounding |
+| `temperatureDifference` | Corrected reference minus current room measurement, rounded to 0.1°C |
+| `sourceTimestamp` | Home Coach sample time in Unix seconds |
+| `sourceAgeSeconds` | Observation time minus source sample time in seconds |
+| `outcome` | Policy proposal: `write`, `no-op` or `skipped` |
+
+For example, `correctedTemperature: 20.4`, `currentTemperature: 19.7` and
+`temperatureDifference: 0.7` mean the Home Coach reference is 0.7°C warmer than
+the room measurement. A small negative `sourceAgeSeconds` is possible within the
+existing clock-skew allowance.
+
+Correlate an observation with the final `sync.mapping.*` outcome using its cycle
+and mapping fields. The observation's `outcome: "write"` records the policy's
+proposed action. Freshness and repeat-write safeguards can still prevent the
+request. An accepted API response does not establish valve movement or room comfort.
+Repeated `sourceTimestamp` values show that the same Home Coach sample was seen
+again; they do not by themselves indicate a fault. The room-status response does
+not establish how fresh its temperature sample is. These fields do not describe a
+scheduled target, setpoint, operating mode, valve position, or deviation from a
+scheduled target.
+
+Missing, invalid, stale or unreachable readings can exit before policy evaluation
+and therefore produce no temperature observation; their existing mapping
+outcomes remain available. The default `LOG_LEVEL=info` hides DEBUG events,
+including these observations, while retaining existing informational, warning
+and error records. Supported levels are `debug`, `info`, `warn` and `error`; an
+unset or unrecognized value uses `info`.
 
 ## Keep credentials private
 

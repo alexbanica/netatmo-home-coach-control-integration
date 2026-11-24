@@ -1,5 +1,6 @@
 import type { LoggerInterface } from "./interfaces/LoggerInterface.js";
-const ALLOWED_FIELDS = new Set(["timestamp", "level", "event", "cycleId", "mapping", "outcome", "sourceDeviceName", "targetHomeName", "targetRoomName", "sourceTemperature", "currentTemperature", "correctedTemperature", "errorCode", "durationMs", "redirectReason", "redirectHost"]);
+const ALLOWED_FIELDS = new Set(["timestamp", "level", "event", "cycleId", "mapping", "outcome", "sourceDeviceName", "targetHomeName", "targetRoomName", "sourceTemperature", "currentTemperature", "correctedTemperature", "rawSourceTemperature", "rawCurrentTemperature", "temperatureDifference", "sourceTimestamp", "sourceAgeSeconds", "errorCode", "durationMs", "redirectReason", "redirectHost"]);
+const FINITE_NUMBER_FIELDS = new Set(["sourceTemperature", "currentTemperature", "correctedTemperature", "rawSourceTemperature", "rawCurrentTemperature", "temperatureDifference", "sourceTimestamp", "sourceAgeSeconds", "durationMs", "cycleId"]);
 const SAFE_CODES = new Set([
   "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN", "ENOTFOUND", "ERR_NETWORK", "ERR_INVALID_SESSION", "ERR_RATE_LIMIT",
   "ENETWORK", "EABORTED", "EHOST", "EURL", "EHEADERS", "EOPTIONS", "EMETHOD",
@@ -33,7 +34,7 @@ export class StructuredLogger implements LoggerInterface {
       if (key === "errorCode") { if ((typeof value === "number" && Number.isInteger(value)) || (typeof value === "string" && (/^HTTP_[1-5]\d{2}$/.test(value) || /^API_\d{1,6}$/.test(value) || SAFE_CODES.has(value)))) record.errorCode = value; continue; }
       if (key === "redirectReason") { if (typeof value === "string" && REDIRECT_REASONS.has(value)) record.redirectReason = value; continue; }
       if (key === "redirectHost") { if (typeof value === "string" && SAFE_REDIRECT_HOST.test(value)) record.redirectHost = value; continue; }
-      if (key.endsWith("Temperature") || key === "durationMs" || key === "cycleId") { if (typeof value === "number" && Number.isFinite(value)) record[key] = value; continue; }
+      if (FINITE_NUMBER_FIELDS.has(key)) { if (typeof value === "number" && Number.isFinite(value)) record[key] = value; continue; }
       if (typeof value === "string" && value.length <= 200) record[key] = value;
       else if (typeof value === "number" && Number.isFinite(value)) record[key] = value;
     }

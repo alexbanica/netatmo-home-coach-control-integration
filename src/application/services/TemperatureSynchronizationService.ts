@@ -108,6 +108,45 @@ export class TemperatureSynchronizationService implements TemperatureSynchroniza
     } catch { /* Logging must not interrupt synchronization. */ }
   }
 
+  private emitTemperatureObservation(
+    mapping: CalibrationMapping,
+    cycleId: number | string,
+    sourceTemperature: number,
+    currentTemperature: number,
+    correctedTemperature: number,
+    rawSourceTemperature: number,
+    rawCurrentTemperature: number,
+    sourceTimestamp: number,
+    outcome: "write" | "no-op" | "skipped"
+  ): void {
+    try {
+      const observedAt = this.clock.now();
+      if (!Number.isFinite(observedAt)) return;
+      const temperatureDifference = this.policy.roundCelsius(correctedTemperature - currentTemperature);
+      const sourceAgeSeconds = observedAt / 1000 - sourceTimestamp;
+      if (![sourceTemperature, currentTemperature, correctedTemperature, rawSourceTemperature, rawCurrentTemperature, temperatureDifference, sourceTimestamp, sourceAgeSeconds].every(Number.isFinite)) return;
+      this.logger.log({
+        timestamp: new Date(observedAt).toISOString(),
+        level: "debug",
+        event: "sync.mapping.temperature_observation",
+        cycleId,
+        mapping: `${mapping.sourceDeviceName} -> ${mapping.targetHomeName}/${mapping.targetRoomName}`,
+        sourceDeviceName: mapping.sourceDeviceName,
+        targetHomeName: mapping.targetHomeName,
+        targetRoomName: mapping.targetRoomName,
+        sourceTemperature,
+        currentTemperature,
+        correctedTemperature,
+        rawSourceTemperature,
+        rawCurrentTemperature,
+        temperatureDifference,
+        sourceTimestamp,
+        sourceAgeSeconds,
+        outcome
+      });
+    } catch { /* Diagnostics must not interrupt synchronization. */ }
+  }
+
   private async executeLocked(options: SynchronizationExecutionOptions): Promise<SynchronizationCycleResult> {
     this.cycleSequence += 1;
     const cycleSequence = this.cycleSequence;
@@ -198,6 +237,12 @@ export class TemperatureSynchronizationService implements TemperatureSynchroniza
         const latestReason = this.policy.sourceAgeReason(source.timestamp, this.configuration.maxReadingAgeMinutes, this.clock.now());
         const decision = this.policy.decide(source.sourceTemperature, measured, this.configuration.dryRun, this.configuration.maxCorrectionC ?? 5);
         const detail = { sourceTemperature, currentTemperature: decision.currentTemperature, correctedTemperature: decision.correctedTemperature };
+        if (decision.currentTemperature !== undefined && decision.correctedTemperature !== undefined) {
+          this.emitTemperatureObservation(
+            mapping, cycleId, sourceTemperature, decision.currentTemperature, decision.correctedTemperature,
+            source.sourceTemperature, measured, source.timestamp, decision.outcome
+          );
+        }
         if (latestReason) { add(mapping, result(mapping, "skipped", latestReason, detail)); continue; }
         if (decision.outcome !== "write") { add(mapping, result(mapping, decision.outcome, decision.reason, detail)); continue; }
         if (this.stateSavePending) { add(mapping, result(mapping, "skipped", "calibration_state_save_failed", detail)); continue; }
