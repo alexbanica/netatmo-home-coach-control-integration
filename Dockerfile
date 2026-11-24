@@ -11,6 +11,8 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
+RUN mkdir -p /app/state && chown node:node /app/state && chmod 700 /app/state
 COPY --from=builder --chown=node:node /app/dist/ ./dist/
+ENV CALIBRATION_STATE_FILE=/app/state/calibration-state.json
 USER node
 ENTRYPOINT ["node", "dist/main.js"]
