@@ -151,6 +151,8 @@ vite.config.ts.timestamp-*
 # Local runtime configuration and credentials
 config.json
 .env.local
+/calibration-state.json
+/calibration-data/calibration-state.json
 
 # TypeScript build output
 dist/

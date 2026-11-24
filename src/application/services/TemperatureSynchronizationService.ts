@@ -6,11 +6,22 @@ import type { SynchronizationGatewayInterface } from "../ports/SynchronizationGa
 import type { TemperatureSynchronizationServiceInterface, SynchronizationCycleResult, SynchronizationExecutionOptions } from "./interfaces/TemperatureSynchronizationServiceInterface.js";
 import type { LoggerInterface } from "../../shared/logging/interfaces/LoggerInterface.js";
 import type { ClockInterface } from "../../shared/clock/interfaces/ClockInterface.js";
+import type { CalibrationStateRecord, CalibrationStateStoreInterface } from "../ports/CalibrationStateStoreInterface.js";
 
 export interface SynchronizationConfigurationSubset {
   readonly mappings: readonly CalibrationMapping[];
   readonly maxReadingAgeMinutes: number;
   readonly dryRun: boolean;
+  readonly maxCorrectionC?: number;
+  readonly retryUnchangedCycles?: number;
+  readonly calibrationStateRecords?: readonly CalibrationStateRecord[];
+}
+
+interface PendingRoomGuard {
+  readonly preWriteTemperature: number;
+  unchangedCycles: number;
+  readonly timedOut: boolean;
+  lastCountedCycle: number;
 }
 
 const cycleLocks = new WeakMap<object, Promise<void>>();
@@ -41,13 +52,32 @@ function result(mapping: CalibrationMapping, outcome: CycleOutcome["outcome"], r
 export class TemperatureSynchronizationService implements TemperatureSynchronizationServiceInterface {
   private readonly resolver = new MappingResolver();
   private readonly policy = new CalibrationPolicy();
+  private readonly roomGuards = new Map<string, PendingRoomGuard>();
+  private readonly persistedRecords = new Map<string, CalibrationStateRecord>();
+  private cycleSequence = 0;
+  private stateSavePending = false;
 
   constructor(
     private readonly configuration: SynchronizationConfigurationSubset,
     private readonly gateway: SynchronizationGatewayInterface,
     private readonly logger: LoggerInterface,
-    private readonly clock: ClockInterface
-  ) {}
+    private readonly clock: ClockInterface,
+    private readonly calibrationStateStore?: CalibrationStateStoreInterface
+  ) {
+    for (const record of configuration.calibrationStateRecords ?? []) {
+      const key = this.roomKey(record.homeId, record.roomId);
+      this.persistedRecords.set(key, record);
+      this.roomGuards.set(key, { preWriteTemperature: record.preWriteTemperature, unchangedCycles: 0, timedOut: false, lastCountedCycle: 0 });
+    }
+  }
+
+  private roomKey(homeId: string, roomId: string): string { return JSON.stringify([homeId, roomId]); }
+
+  private async saveState(): Promise<void> {
+    if (!this.calibrationStateStore) return;
+    await this.calibrationStateStore.save([...this.persistedRecords.values()]);
+    this.stateSavePending = false;
+  }
 
   async execute(options: SynchronizationExecutionOptions = {}): Promise<SynchronizationCycleResult> {
     const prior = cycleLocks.get(this.gateway) ?? Promise.resolve();
@@ -118,6 +148,8 @@ export class TemperatureSynchronizationService implements TemperatureSynchroniza
   }
 
   private async executeLocked(options: SynchronizationExecutionOptions): Promise<SynchronizationCycleResult> {
+    this.cycleSequence += 1;
+    const cycleSequence = this.cycleSequence;
     const { signal, cycleId = 1 } = options;
     const outcomes: CycleOutcome[] = [];
     let retryAfterMs = 0;
@@ -132,6 +164,13 @@ export class TemperatureSynchronizationService implements TemperatureSynchroniza
       if (aborted(error, signal)) { completeRemaining(index, "skipped", "aborted"); return true; }
       return false;
     };
+    if (this.stateSavePending) {
+      try { await this.saveState(); }
+      catch {
+        completeRemaining(0, "skipped", "calibration_state_save_failed");
+        return { outcomes, retryAfterMs };
+      }
+    }
     if (signal?.aborted) { completeRemaining(0, "skipped", "aborted"); return { outcomes, retryAfterMs }; }
     try {
       this.gateway.beginCycle?.();
@@ -177,8 +216,26 @@ export class TemperatureSynchronizationService implements TemperatureSynchroniza
         }
         const measured = targetRoom.therm_measured_temperature;
         if (typeof measured !== "number" || !Number.isFinite(measured)) { add(mapping, result(mapping, "skipped", "target_temperature_invalid", { sourceTemperature })); continue; }
+        const roomKey = this.roomKey(target.homeId, target.roomId);
+        let guard = this.roomGuards.get(roomKey);
+        let timedOutThisCycle = false;
+        if (guard) {
+          const normalizedMeasured = this.policy.roundCelsius(measured);
+          const readingChanged = normalizedMeasured !== guard.preWriteTemperature;
+          if (guard.timedOut && guard.lastCountedCycle === cycleSequence) {
+            timedOutThisCycle = true;
+          } else if (readingChanged || guard.timedOut) {
+            this.roomGuards.delete(roomKey);
+            guard = undefined;
+          } else {
+            if (guard.lastCountedCycle !== cycleSequence) {
+              if (guard.unchangedCycles < (this.configuration.retryUnchangedCycles ?? 2)) guard.unchangedCycles += 1;
+              guard.lastCountedCycle = cycleSequence;
+            }
+          }
+        }
         const latestReason = this.policy.sourceAgeReason(source.timestamp, this.configuration.maxReadingAgeMinutes, this.clock.now());
-        const decision = this.policy.decide(source.sourceTemperature, measured, this.configuration.dryRun);
+        const decision = this.policy.decide(source.sourceTemperature, measured, this.configuration.dryRun, this.configuration.maxCorrectionC ?? 5);
         const detail = { sourceTemperature, currentTemperature: decision.currentTemperature, correctedTemperature: decision.correctedTemperature };
         if (decision.currentTemperature !== undefined && decision.correctedTemperature !== undefined) {
           this.emitTemperatureObservation(
@@ -188,6 +245,11 @@ export class TemperatureSynchronizationService implements TemperatureSynchroniza
         }
         if (latestReason) { add(mapping, result(mapping, "skipped", latestReason, detail)); continue; }
         if (decision.outcome !== "write") { add(mapping, result(mapping, decision.outcome, decision.reason, detail)); continue; }
+        if (this.stateSavePending) { add(mapping, result(mapping, "skipped", "calibration_state_save_failed", detail)); continue; }
+        if (timedOutThisCycle) { add(mapping, result(mapping, "skipped", "awaiting_room_temperature_change", detail)); continue; }
+        if (guard && !guard.timedOut && guard.unchangedCycles < (this.configuration.retryUnchangedCycles ?? 2)) {
+          add(mapping, result(mapping, "skipped", "awaiting_room_temperature_change", detail)); continue;
+        }
         if (signal?.aborted) { completeRemaining(index, "skipped", "aborted"); break; }
         try {
           const response = record(await this.gateway.calibrateRoom({
@@ -197,7 +259,13 @@ export class TemperatureSynchronizationService implements TemperatureSynchroniza
           }));
           const outcome = response?.outcome;
           let entry: CycleOutcome;
-          if (outcome === "updated") entry = result(mapping, "updated", undefined, detail);
+          if (outcome === "updated") {
+            this.roomGuards.set(roomKey, { preWriteTemperature: this.policy.roundCelsius(measured), unchangedCycles: 0, timedOut: false, lastCountedCycle: cycleSequence });
+            const stateRecord: CalibrationStateRecord = { homeId: target.homeId, roomId: target.roomId, preWriteTemperature: this.policy.roundCelsius(measured) };
+            this.persistedRecords.set(roomKey, stateRecord);
+            try { await this.saveState(); entry = result(mapping, "updated", undefined, detail); }
+            catch { this.stateSavePending = true; entry = result(mapping, "updated", "calibration_state_save_failed", detail); }
+          }
           else if (outcome === "no-op") entry = result(mapping, "no-op", "nothing_to_modify", detail);
           else if (outcome === "failed" || outcome === "indeterminate") entry = result(mapping, outcome, "calibration_not_confirmed", detail);
           else entry = result(mapping, "indeterminate", "calibration_response_invalid", detail);
@@ -206,8 +274,9 @@ export class TemperatureSynchronizationService implements TemperatureSynchroniza
           if (response?.status === 429) { completeRemaining(index + 1, "skipped", "rate_limited", "ERR_RATE_LIMIT"); break; }
         } catch (error) {
           if (record(error)?.code === "SOURCE_STALE") { add(mapping, result(mapping, "skipped", "source_stale", detail)); continue; }
-          if (halt(error, index)) break;
           const err = record(error);
+          if (err?.postTimeout === true) this.roomGuards.set(roomKey, { preWriteTemperature: this.policy.roundCelsius(measured), unchangedCycles: 0, timedOut: true, lastCountedCycle: cycleSequence });
+          if (halt(error, index)) break;
           const outcome = err?.outcome === "indeterminate" || err?.outcome === "failed" ? err.outcome : "failed";
           add(mapping, result(mapping, outcome, "calibration_failed", { ...detail, errorCode: failCode(error) }));
         }

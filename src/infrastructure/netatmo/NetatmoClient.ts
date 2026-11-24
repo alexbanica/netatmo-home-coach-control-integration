@@ -263,6 +263,7 @@ export class NetatmoClient implements SynchronizationGatewayInterface {
         status: isRecord(error) && typeof error.status === "number" ? error.status : undefined,
         code: "WRITE_TRANSPORT_ERROR",
         outcome: "indeterminate",
+        postTimeout: isRecord(error) && error.code === "ETIMEDOUT",
         retryAfterMs: isRecord(error) && typeof error.retryAfterMs === "number" ? error.retryAfterMs : undefined
       });
     }

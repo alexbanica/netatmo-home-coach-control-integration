@@ -65,11 +65,15 @@ Connection credentials and runtime settings come from environment variables.
 | `CONFIG_FILE` | No | `./config.json`. |
 | `SYNC_INTERVAL_MINUTES` | No | `5`; positive integer. |
 | `MAX_READING_AGE_MINUTES` | No | `15`; positive integer, independent of the cycle interval. |
+| `MAX_CORRECTION_C` | No | `5`°C; positive finite Celsius value in 0.1°C increments. Caps the absolute adjustment in each write. |
+| `CALIBRATION_RETRY_UNCHANGED_CYCLES` | No | `2`; positive integer count of unchanged valid room readings before another write is eligible. |
+| `CALIBRATION_STATE_FILE` | No | `./calibration-state.json`, relative to the working directory. Stores each room's last successful write's normalized pre-write temperature. |
 | `DRY_RUN` | No | `false`; only literal `true` or `false` is accepted. |
 
 Malformed JSON, unknown keys, duplicate targets, invalid settings, incomplete
-refresh credentials, or missing required credentials stop startup with a
-nonzero exit before API or calibration work. Dry-run still requires all three
+refresh credentials, missing required credentials, or invalid/unreadable
+calibration state stop startup with a nonzero exit before API or calibration
+work. Dry-run still requires all three
 required credentials, performs reads and reports intended adjustments, but
 does not issue True Temperature writes.
 
@@ -188,14 +192,13 @@ existing clock-skew allowance.
 
 Correlate an observation with the final `sync.mapping.*` outcome using its cycle
 and mapping fields. The observation's `outcome: "write"` records the policy's
-proposed action; a later freshness check can still prevent the request, and an
-accepted API response still does not establish valve movement or room comfort.
+proposed action. Freshness and repeat-write safeguards can still prevent the
+request. An accepted API response does not establish valve movement or room comfort.
 Repeated `sourceTimestamp` values show that the same Home Coach sample was seen
 again; they do not by themselves indicate a fault. The room-status response does
 not establish how fresh its temperature sample is. These fields do not describe a
 scheduled target, setpoint, operating mode, valve position, or deviation from a
-scheduled target. This observation-first logging gathers evidence before any
-future consideration of calibration-policy changes.
+scheduled target.
 
 Missing, invalid, stale or unreachable readings can exit before policy evaluation
 and therefore produce no temperature observation; their existing mapping
@@ -259,14 +262,55 @@ the underlying sensor sample itself is fresh because the service does not
 validate a target-sensor timestamp.
 
 The source and current target values are rounded to one decimal Celsius. Equal
-rounded values are a no-op. A difference greater than 5°C is skipped without
-clamping or splitting. For an allowed correction the payload uses the current
-room measurement and Home Coach value. Only HTTP 406 with API code 7 and the
+rounded values are a no-op. `MAX_CORRECTION_C` caps the absolute signed
+difference for each write; its default is 5°C and configured values may use
+positive finite decimal increments of 0.1°C. For example, with the default cap,
+a room at 18°C and source at 25°C produces a 23°C candidate, while a room at
+25°C and source at 18°C produces a 20°C candidate. A configured cap of 2.5°C
+would bound those candidates to 20.5°C and 22.5°C, respectively. The payload
+uses the current room measurement and the bounded candidate. Only HTTP 406
+with API code 7 and the
 exact `Nothing to modify` message is classified as a no-op; other 406 or code
 7 responses are not success. A write counts as updated only for a valid
 success response. A malformed or unexpected response, timeout, connection
 loss or server error can have an indeterminate result; the service does not
-retry that write. It waits for the next ordinary cycle, which rereads status.
+replay that write. It waits for the next ordinary cycle, which rereads status.
+
+After a successful write, the service saves the normalized room temperature
+observed before that write, keyed by resolved home and room IDs. This comparison
+value prevents another correction while Netatmo still reports the same room
+temperature. The default retry threshold is two valid unchanged room readings,
+counted at most once per synchronization cycle. At the default five-minute
+interval, the first such reading is held and a write can become eligible on the
+second, roughly ten minutes after the original write, subject to cycle duration
+and any rate-limit delay. Set `CALIBRATION_RETRY_UNCHANGED_CYCLES` to a positive
+integer to change the threshold. A changed valid room temperature releases the
+guard in that cycle; missing or invalid room readings neither advance nor
+release it. Another successful correction resets the count. Reaching the
+threshold only permits an attempt if the usual checks pass; it does not prove
+the earlier write failed.
+
+An indeterminate POST timeout is handled separately: the service retains the
+pre-write comparison in memory until the next ordinary cycle with a valid room
+reading. It then reevaluates the current readings and may make a fresh eligible
+write whether the room value is unchanged or changed. A later write can apply
+an additional correction even if the timed-out request took effect after the
+room status was read. Timeout comparison state is not persisted and is lost on
+restart.
+
+The state file is loaded and validated at startup; if absent, an empty state
+file is created. Invalid or unreadable state, or inability to create it, stops
+startup before calibration. The file contains only home and room identifiers
+and their last successful write's normalized pre-write temperature. On restart,
+the saved value is restored with its unchanged-cycle counter reset to zero; the
+last successful record remains on disk when an observed room change releases
+the in-memory guard. The service atomically replaces the file after successful
+writes. If Netatmo accepts a write but saving fails, the mapping remains
+`updated` with reason `calibration_state_save_failed`; the in-memory guard is
+kept, and further writes are held until saving the pending state succeeds.
+There is a crash window between provider acceptance and local save in which the
+latest successful write may be absent from disk. Run one service instance per
+configuration.
 
 ## Logs, errors and recovery
 
@@ -276,13 +320,21 @@ Credentials, cookies, authorization headers, token responses,
 credential-bearing URLs and raw authentication bodies are excluded.
 
 - `startup_failed`: inspect the fixed outcome, required environment variables,
-  JSON syntax/schema, and positive integer settings. Correct local config and
-  restart; invalid startup never starts calibration.
+  JSON syntax/schema, positive integer settings, and the calibration state
+  file's path, permissions and contents. Correct local config or state storage
+  and restart; invalid startup never starts calibration.
 - `source_not_found`, `source_ambiguous`, stale/invalid source, or target
   discovery/status outcomes: check exact configured names and device/room
   availability. Independent mappings continue when possible.
 - `dry_run`: review the intended mapping and values. Set `DRY_RUN=false` only
   when a calibration write is deliberately intended.
+- A mapping reports `awaiting_room_temperature_change` when the room still
+  reports its pre-write temperature below the configured unchanged-cycle
+  threshold, or when an earlier mapping to the same room timed out in this
+  cycle. The service reevaluates the room on a later cycle.
+- A mapping can report `updated` with reason `calibration_state_save_failed`
+  when Netatmo accepted the write but local persistence failed. The process
+  retains the guard and holds further writes while it retries saving the file.
 - Access-token-only warning or OAuth refresh diagnostics: reprovision valid
   OAuth credentials; a complete refresh credential trio enables one GET
   refresh attempt per cycle for HTTP 401 or explicit API code 2/3. Code 13
@@ -312,10 +364,10 @@ docker --context default build --tag netatmo-homecoach:local .
 configured as the host default. The Dockerfile uses the same digest-pinned
 Node 24.21 Alpine base for builder and runtime stages. It compiles the
 TypeScript application in the builder, then packages the compiled `dist/`
-output with locked production dependencies. The image runs as the non-root
-`node` user and starts `node dist/main.js` in the foreground. It contains no
-runtime configuration or credentials. No writable application volume is
-needed.
+output with locked production dependencies. The image runs as non-root UID
+1000 (`node`) and starts `node dist/main.js` in the foreground. It contains no
+runtime configuration or credentials. Calibration state must be kept in a
+writable persistent host directory so it survives container replacement.
 
 After creating and reviewing private `.env.local` and `config.json`, start
 with the environment file and a read-only config bind mount:
@@ -324,20 +376,26 @@ with the environment file and a read-only config bind mount:
 docker --context default run --rm \
   --env-file .env.local \
   --env CONFIG_FILE=/app/config.json \
+  --env CALIBRATION_STATE_FILE=/var/lib/netatmo/calibration-state.json \
   --mount "type=bind,src=$PWD/config.json,dst=/app/config.json,readonly" \
+  --mount "type=bind,src=$PWD/calibration-data,dst=/var/lib/netatmo" \
   netatmo-homecoach:local
 ```
 
 The image does not copy the host environment file. Supply credentials only at
 container runtime; do not place them in Docker build arguments, image layers,
-or command-line values. Ensure the host config file is readable by the image's
-non-root UID 1000. Run one container for each configuration.
+or command-line values. Ensure the host config file is readable by UID 1000 and
+the host `calibration-data` directory exists and is writable by UID 1000; set
+its ownership for the container's runtime user before starting. The state path
+must point inside that mounted directory. Custom `CALIBRATION_STATE_FILE`
+paths also require an explicit writable mount in a container. Run one
+container for each configuration.
 
 ## CI and local checks
 
 GitHub Actions validation runs on pull requests and pushes to `main` and
 `feature/netatmo-homecoach-true-temperature`. It installs locked dependencies,
-runs ESLint and strict source/test type-checking, runs the 19 domain and
+runs ESLint and strict source/test type-checking, runs the domain and
 application business-rule unit cases, and compiles the application. These tests
 do not exercise infrastructure, authentication, HTTP, scheduling or container
 execution. Validation uses no Netatmo account credentials and makes no live API

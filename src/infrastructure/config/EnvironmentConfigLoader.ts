@@ -6,6 +6,8 @@ const DEFAULT_SYNC_INTERVAL_MINUTES = 5;
 const DEFAULT_MAX_READING_AGE_MINUTES = 15;
 const DEFAULT_HEALTHCHECK_PORT = 8080;
 const DEFAULT_HEALTHCHECK_MAX_CYCLE_SECONDS = 600;
+const DEFAULT_MAX_CORRECTION_C = 5;
+const DEFAULT_CALIBRATION_RETRY_UNCHANGED_CYCLES = 2;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -18,6 +20,18 @@ function positiveInteger(value: string | undefined, name: string, fallback: numb
   }
   const number = Number(value);
   if (!Number.isSafeInteger(number)) throw new Error(`${name} must be a safe positive integer`);
+  return number;
+}
+
+function positiveCelsius(value: string | undefined, name: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!/^(?:[0-9]+(?:\.[0-9]0*)?|\.[0-9]0*)$/.test(value)) {
+    throw new Error(`${name} must be a positive Celsius value in 0.1 degree increments`);
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0 || Math.round(number * 10) / 10 !== number) {
+    throw new Error(`${name} must be a positive Celsius value in 0.1 degree increments`);
+  }
   return number;
 }
 
@@ -93,6 +107,9 @@ export async function loadConfig({ env = process.env, cwd = process.cwd() }: Env
   if (!Number.isSafeInteger(healthcheckMaxCycleMs)) throw new Error("HEALTHCHECK_MAX_CYCLE_SECONDS must convert to safe milliseconds");
   const dryRunValue = env.DRY_RUN ?? "false";
   if (dryRunValue !== "true" && dryRunValue !== "false") throw new Error("DRY_RUN must be exactly true or false");
+  const maxCorrectionC = positiveCelsius(env.MAX_CORRECTION_C, "MAX_CORRECTION_C", DEFAULT_MAX_CORRECTION_C);
+  const retryUnchangedCycles = positiveInteger(env.CALIBRATION_RETRY_UNCHANGED_CYCLES, "CALIBRATION_RETRY_UNCHANGED_CYCLES", DEFAULT_CALIBRATION_RETRY_UNCHANGED_CYCLES);
+  const calibrationStateFile = resolve(cwd, env.CALIBRATION_STATE_FILE || "./calibration-state.json");
 
   const refreshKeys = ["REFRESH_TOKEN", "CLIENT_ID", "CLIENT_SECRET"] as const;
   const suppliedRefreshKeys = refreshKeys.filter((key) => typeof env[key] === "string" && env[key]?.trim() !== "");
@@ -114,6 +131,9 @@ export async function loadConfig({ env = process.env, cwd = process.cwd() }: Env
     syncIntervalMinutes,
     maxReadingAgeMinutes,
     dryRun: dryRunValue === "true",
+    maxCorrectionC,
+    retryUnchangedCycles,
+    calibrationStateFile,
     healthcheckPort,
     healthcheckMaxCycleMs,
     credentials,
