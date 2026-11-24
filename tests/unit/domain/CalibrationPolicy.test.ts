@@ -9,11 +9,15 @@ const discovery = (sourceName = "Coach", homeName = "Home", roomName = "Room") =
   homes: { body: { homes: [{ id: "home-id", name: homeName, rooms: [{ id: "room-id", name: roomName }] }] } }
 });
 
-test("calibration policy rounds, recognizes no-op and enforces the five degree bound", () => {
+test("calibration policy rounds, recognizes no-op and caps corrections at five degrees", () => {
   const policy = new CalibrationPolicy();
   assert.deepEqual(policy.decide(20.04, 20.03, false), { outcome: "no-op", reason: "temperatures_equal", currentTemperature: 20, correctedTemperature: 20 });
-  assert.equal(policy.decide(25.1, 20, false).reason, "correction_exceeds_limit");
+  assert.deepEqual(policy.decide(25, 18, false), { outcome: "write", currentTemperature: 18, correctedTemperature: 23 });
+  assert.deepEqual(policy.decide(18, 25, false), { outcome: "write", currentTemperature: 25, correctedTemperature: 20 });
+  assert.deepEqual(policy.decide(25, 20, false), { outcome: "write", currentTemperature: 20, correctedTemperature: 25 });
   assert.deepEqual(policy.decide(18.1, 13.1, false), { outcome: "write", currentTemperature: 13.1, correctedTemperature: 18.1 });
+  assert.deepEqual(policy.decide(30, 20, false), { outcome: "write", currentTemperature: 20, correctedTemperature: 25 });
+  assert.deepEqual(policy.decide(20, 30, false, 3), { outcome: "write", currentTemperature: 30, correctedTemperature: 27 });
   assert.equal(policy.decide(21, 20, true).reason, "dry_run");
 });
 

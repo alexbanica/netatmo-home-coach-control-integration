@@ -16,6 +16,9 @@ export interface ServiceConfigurationInterface {
   readonly syncIntervalMinutes: number;
   readonly maxReadingAgeMinutes: number;
   readonly dryRun: boolean;
+  readonly maxCorrectionC: number;
+  readonly retryUnchangedCycles: number;
+  readonly calibrationStateFile: string;
   readonly healthcheckPort: number;
   readonly healthcheckMaxCycleMs: number;
   readonly credentials: ServiceCredentials;

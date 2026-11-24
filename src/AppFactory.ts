@@ -1,4 +1,5 @@
 import { EnvironmentConfigLoader } from "./infrastructure/config/EnvironmentConfigLoader.js";
+import { CalibrationStateFileStore } from "./infrastructure/config/CalibrationStateFileStore.js";
 import { HttpClient } from "./infrastructure/http/HttpClient.js";
 import { OAuthClient } from "./infrastructure/netatmo/OAuthClient.js";
 import { WebSession } from "./infrastructure/netatmo/WebSession.js";
@@ -18,7 +19,15 @@ export class AppFactory {
     const oauthClient = new OAuthClient({ httpClient, ...config.credentials });
     const webSession = new WebSession({ httpClient, username: config.credentials.username, password: config.credentials.password, logger: options.logger });
     const gateway = new NetatmoClient({ oauthClient, webSession, httpClient, logger: options.logger });
-    const service = new TemperatureSynchronizationService({ maxReadingAgeMinutes: config.maxReadingAgeMinutes, dryRun: config.dryRun, mappings: config.mappings }, gateway, options.logger, options.clock);
+    const calibrationState = await CalibrationStateFileStore.open(config.calibrationStateFile, config.configFile);
+    const service = new TemperatureSynchronizationService({
+      maxReadingAgeMinutes: config.maxReadingAgeMinutes,
+      dryRun: config.dryRun,
+      maxCorrectionC: config.maxCorrectionC,
+      retryUnchangedCycles: config.retryUnchangedCycles,
+      calibrationStateRecords: calibrationState.records,
+      mappings: config.mappings
+    }, gateway, options.logger, options.clock, calibrationState.store);
     const health = new ServiceHealthState(config.healthcheckMaxCycleMs, () => performance.now());
     const scheduler = new SerialScheduler({ runCycle: (input) => service.execute(input), intervalMs: config.syncIntervalMinutes * 60_000, clock: options.clock, logger: options.logger, health });
     return {

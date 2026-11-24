@@ -11,7 +11,7 @@ const source = (temp = 21.26, time = now / 1000, name = "Coach A") => ({ module_
 const home = (rooms: unknown[] = [{ id: "room-id", name: "Room A" }]) => ({ id: "home-id", name: "Home", rooms });
 const status = (temp: unknown = 20.04, id = "room-id") => ({ body: { home: { rooms: [{ id, therm_measured_temperature: temp }] } } });
 
-function setup(options: { mappings?: typeof mapping[]; devices?: unknown[]; homes?: unknown[]; statuses?: unknown[]; writes?: unknown[]; writeErrors?: unknown[]; dryRun?: boolean } = {}) {
+function setup(options: { mappings?: typeof mapping[]; devices?: unknown[]; homes?: unknown[]; statuses?: unknown[]; writes?: unknown[]; writeErrors?: unknown[]; dryRun?: boolean; retryUnchangedCycles?: number; maxCorrectionC?: number; records?: readonly { homeId: string; roomId: string; preWriteTemperature: number }[]; store?: { save(records: readonly { homeId: string; roomId: string; preWriteTemperature: number }[]): Promise<void> } } = {}) {
   const calls: string[] = [];
   const logs: Readonly<Record<string, unknown>>[] = [];
   const requests: CalibrationRequest[] = [];
@@ -31,7 +31,7 @@ function setup(options: { mappings?: typeof mapping[]; devices?: unknown[]; home
   };
   const logger: LoggerInterface = { log(entry) { logs.push(entry); } };
   const clock: ClockInterface = { now: () => time };
-  const service = new TemperatureSynchronizationService({ mappings: options.mappings ?? [mapping], maxReadingAgeMinutes: 15, dryRun: options.dryRun ?? false }, gateway, logger, clock);
+  const service = new TemperatureSynchronizationService({ mappings: options.mappings ?? [mapping], maxReadingAgeMinutes: 15, dryRun: options.dryRun ?? false, retryUnchangedCycles: options.retryUnchangedCycles, maxCorrectionC: options.maxCorrectionC, calibrationStateRecords: options.records }, gateway, logger, clock, options.store);
   return { calls, logs, requests, service, gateway, setTime(value: number) { time = value; } };
 }
 
@@ -115,7 +115,7 @@ test("skips absent, unavailable, unreachable and invalid target room data", asyn
 
 test("rounding creates no-op and corrections over five degrees skip, exact bound writes", async () => {
   assert.equal((await setup({ devices: [source(20.04)], statuses: [status(20.03)] }).service.execute()).outcomes[0]?.outcome, "no-op");
-  assert.equal((await setup({ devices: [source(25.1)] }).service.execute()).outcomes[0]?.reason, "correction_exceeds_limit");
+  assert.equal((await setup({ devices: [source(25.1)] }).service.execute()).outcomes[0]?.outcome, "updated");
   assert.equal((await setup({ devices: [source(18.1)], statuses: [status(13.1)] }).service.execute()).outcomes[0]?.outcome, "updated");
 });
 
@@ -123,7 +123,7 @@ test("dry-run performs reads and never writes", async () => {
   const s = setup({ dryRun: true }); assert.equal((await s.service.execute()).outcomes[0]?.reason, "dry_run"); assert.deepEqual(s.calls, ["coach", "homes", "status"]);
 });
 
-test("takes a new target reading on every mapping and every cycle", async () => {
+test("takes a new target reading on every mapping and every cycle while holding unchanged rooms", async () => {
   const calls: string[] = []; let statusIndex = 0;
   const gateway: SynchronizationGatewayInterface = {
     async getHomeCoachData() { return { body: { devices: [source()] } }; }, async getHomesData() { return { body: { homes: [home([{ id: "a", name: "Room A" }, { id: "b", name: "Room B" }])] } }; },
@@ -132,9 +132,10 @@ test("takes a new target reading on every mapping and every cycle", async () => 
   const service = new TemperatureSynchronizationService({ mappings: [mapping, { ...mapping, targetRoomName: "Room B" }], maxReadingAgeMinutes: 15, dryRun: false }, gateway, { log() {} }, { now: () => now });
   const first = await service.execute(); const second = await service.execute();
   assert.deepEqual(first.outcomes.map(({ outcome }) => outcome), ["updated", "updated"]);
-  assert.deepEqual(second.outcomes.map(({ outcome }) => outcome), ["no-op", "updated"]);
+  assert.deepEqual(second.outcomes.map(({ outcome }) => outcome), ["no-op", "skipped"]);
+  assert.equal(second.outcomes[1]?.reason, "awaiting_room_temperature_change");
   assert.equal(calls.filter((x) => x === "status").length, 4);
-  assert.equal(calls.filter((x) => x === "write").length, 3);
+  assert.equal(calls.filter((x) => x === "write").length, 2);
 });
 
 test("checks source freshness again at the injected pre-write guard", async () => {
@@ -174,4 +175,146 @@ test("abort after status prevents a write", async () => {
   const controller = new AbortController(); const s = setup(); const gateway = s.gateway;
   const statusMethod = gateway.getHomeStatus.bind(gateway); gateway.getHomeStatus = async (...args) => { const value = await statusMethod(...args); controller.abort(); return value; };
   assert.equal((await s.service.execute({ signal: controller.signal })).outcomes[0]?.reason, "aborted"); assert.equal(s.calls.includes("write"), false);
+});
+
+test("holds a successful correction for the configured unchanged cycles, then retries from fresh readings", async () => {
+  const s = setup({ devices: [source(25)], statuses: [status(20), status(20), status(20), status(20)], retryUnchangedCycles: 2 });
+  assert.equal((await s.service.execute()).outcomes[0]?.outcome, "updated");
+  assert.equal((await s.service.execute()).outcomes[0]?.reason, "awaiting_room_temperature_change");
+  assert.equal((await s.service.execute()).outcomes[0]?.outcome, "updated");
+  assert.equal((await s.service.execute()).outcomes[0]?.reason, "awaiting_room_temperature_change");
+  assert.equal(s.requests.length, 2);
+  assert.equal(s.requests[1]?.correctedTemperature, 25);
+});
+
+test("only valid unchanged readings count toward a custom threshold", async () => {
+  const s = setup({
+    statuses: [status(20), status("bad"), undefined, status(20), status(20), status(20)],
+    retryUnchangedCycles: 3
+  });
+  await s.service.execute();
+  assert.equal((await s.service.execute()).outcomes[0]?.reason, "target_temperature_invalid");
+  assert.equal((await s.service.execute()).outcomes[0]?.reason, "target_status_missing");
+  assert.equal((await s.service.execute()).outcomes[0]?.reason, "awaiting_room_temperature_change");
+  assert.equal((await s.service.execute()).outcomes[0]?.reason, "awaiting_room_temperature_change");
+  assert.equal((await s.service.execute()).outcomes[0]?.outcome, "updated");
+  assert.equal(s.requests.length, 2);
+});
+
+test("changed room reading releases the guard immediately", async () => {
+  const s = setup({ statuses: [status(20), status(20.5)], retryUnchangedCycles: 3 });
+  await s.service.execute();
+  assert.equal((await s.service.execute()).outcomes[0]?.outcome, "updated");
+  assert.equal(s.requests[1]?.currentTemperature, 20.5);
+});
+
+test("timeout permits reevaluation next cycle with the unchanged room reading", async () => {
+  const timeout = () => Object.assign(new Error(), { code: "ETIMEDOUT", postTimeout: true, outcome: "indeterminate" });
+  const s = setup({ writeErrors: [timeout(), timeout()], statuses: [status(20), status(20), status(20)] });
+  assert.equal((await s.service.execute()).outcomes[0]?.outcome, "indeterminate");
+  assert.equal((await s.service.execute()).outcomes[0]?.outcome, "indeterminate");
+  assert.equal((await s.service.execute()).outcomes[0]?.outcome, "updated");
+  assert.equal(s.requests.length, 3);
+});
+
+test("restored state begins with zero unchanged cycles", async () => {
+  const s = setup({ records: [{ homeId: "home-id", roomId: "room-id", preWriteTemperature: 20 }], statuses: [status(20), status(20)] });
+  assert.equal((await s.service.execute()).outcomes[0]?.reason, "awaiting_room_temperature_change");
+  assert.equal((await s.service.execute()).outcomes[0]?.outcome, "updated");
+});
+
+test("successful save preserves other records and failed save blocks later writes", async () => {
+  const saved: unknown[] = [];
+  const s = setup({ records: [{ homeId: "other-home", roomId: "other-room", preWriteTemperature: 18 }], statuses: [status(20), status(20.5)], store: { async save(records) { saved.push(records); } } });
+  await s.service.execute();
+  assert.deepEqual(saved[0], [
+    { homeId: "other-home", roomId: "other-room", preWriteTemperature: 18 },
+    { homeId: "home-id", roomId: "room-id", preWriteTemperature: 20 }
+  ]);
+  await s.service.execute();
+  assert.equal((saved.at(-1) as { homeId: string }[])[0]?.homeId, "other-home");
+
+  let saveCalls = 0;
+  const failed = setup({ store: { async save() { saveCalls++; throw new Error("private path"); } }, mappings: [mapping, { ...mapping, targetRoomName: "Room B" }], homes: [home([{ id: "room-id", name: "Room A" }, { id: "room-b", name: "Room B" }])], statuses: [status(20), status(20, "room-b")] });
+  const result = await failed.service.execute();
+  assert.equal(result.outcomes[0]?.reason, "calibration_state_save_failed");
+  assert.equal(result.outcomes[1]?.reason, "calibration_state_save_failed");
+  assert.equal(failed.requests.length, 1);
+  assert.equal(saveCalls, 1);
+});
+
+test("multiple mappings to the same resolved room count unchanged readings once per cycle", async () => {
+  const sameRoomMappings = [mapping, { ...mapping, sourceDeviceName: "Coach B" }];
+  const s = setup({ mappings: sameRoomMappings, devices: [source(25), source(25, now / 1000, "Coach B")], statuses: [status(20), status(20), status(20), status(20)], retryUnchangedCycles: 2 });
+  assert.deepEqual((await s.service.execute()).outcomes.map(({ outcome }) => outcome), ["updated", "skipped"]);
+  assert.equal((await s.service.execute()).outcomes[0]?.reason, "awaiting_room_temperature_change");
+  assert.equal(s.requests.length, 1);
+});
+
+test("timeout blocks an aliased mapping for the rest of its cycle, then uses the next changed reading", async () => {
+  const aliases = [mapping, { ...mapping, sourceDeviceName: "Coach B" }];
+  const s = setup({ mappings: aliases, devices: [source(25), source(25, now / 1000, "Coach B")], statuses: [status(20), status(21), status(21)], writeErrors: [Object.assign(new Error(), { postTimeout: true, outcome: "indeterminate" })] });
+  const first = await s.service.execute();
+  assert.equal(first.outcomes[0]?.outcome, "indeterminate");
+  assert.equal(first.outcomes[1]?.reason, "awaiting_room_temperature_change");
+  assert.equal(s.requests.length, 1);
+  assert.equal((await s.service.execute()).outcomes[0]?.outcome, "updated");
+  assert.equal(s.requests.length, 2);
+  assert.equal(s.requests[1]?.currentTemperature, 21);
+});
+
+test("a second timeout on an aliased mapping also blocks the remaining same-cycle POST", async () => {
+  const aliases = [mapping, { ...mapping, sourceDeviceName: "Coach B" }];
+  const timeout = () => Object.assign(new Error(), { postTimeout: true, outcome: "indeterminate" });
+  const s = setup({ mappings: aliases, devices: [source(25), source(25, now / 1000, "Coach B")], statuses: [status(20), status(20), status(20), status(20)], writeErrors: [timeout(), timeout()] });
+  assert.deepEqual((await s.service.execute()).outcomes.map(({ outcome }) => outcome), ["indeterminate", "skipped"]);
+  assert.deepEqual((await s.service.execute()).outcomes.map(({ outcome }) => outcome), ["indeterminate", "skipped"]);
+  assert.equal(s.requests.length, 2);
+});
+
+test("changed Home Coach reference is recalculated after a hold and a threshold no-op stays eligible", async () => {
+  let coachTemperature = 25;
+  const candidates: number[] = [];
+  const gateway: SynchronizationGatewayInterface = {
+    async getHomeCoachData() { return { body: { devices: [source(coachTemperature)] } }; },
+    async getHomesData() { return { body: { homes: [home()] } }; },
+    async getHomeStatus() { return status(20); },
+    async calibrateRoom(request) {
+      candidates.push(request.correctedTemperature);
+      return { outcome: candidates.length === 2 ? "no-op" : "updated" };
+    }
+  };
+  const service = new TemperatureSynchronizationService({ mappings: [mapping], maxReadingAgeMinutes: 15, dryRun: false, retryUnchangedCycles: 2 }, gateway, { log() {} }, { now: () => now });
+  assert.equal((await service.execute()).outcomes[0]?.outcome, "updated");
+  coachTemperature = 24;
+  assert.equal((await service.execute()).outcomes[0]?.reason, "awaiting_room_temperature_change");
+  assert.equal((await service.execute()).outcomes[0]?.outcome, "no-op");
+  assert.equal((await service.execute()).outcomes[0]?.outcome, "updated");
+  assert.deepEqual(candidates, [25, 24, 24]);
+});
+
+test("non-successful writes and dry-run do not persist state", async () => {
+  let saves = 0;
+  const store = { async save() { saves++; } };
+  await setup({ store, writeErrors: [Object.assign(new Error(), { outcome: "failed" })] }).service.execute();
+  await setup({ store, writes: [{ outcome: "no-op" }] }).service.execute();
+  await setup({ store, devices: [source(20)], statuses: [status(20)] }).service.execute();
+  await setup({ store, dryRun: true }).service.execute();
+  const stale = setup({ store });
+  stale.gateway.calibrateRoom = async ({ beforeWrite }) => { stale.setTime(now + 901_000); await beforeWrite?.(); throw Object.assign(new Error(), { code: "SOURCE_STALE" }); };
+  await stale.service.execute();
+  assert.equal(saves, 0);
+});
+
+test("failed state save is flushed next cycle before another room can write", async () => {
+  let saves = 0;
+  const store = { async save() { saves++; if (saves === 1) throw new Error("private path"); } };
+  const s = setup({ mappings: [mapping, { ...mapping, targetRoomName: "Room B" }], homes: [home([{ id: "room-id", name: "Room A" }, { id: "room-b", name: "Room B" }])], statuses: [status(20), status(20, "room-b"), status(20), status(20, "room-b")], store });
+  const first = await s.service.execute();
+  assert.equal(first.outcomes[0]?.reason, "calibration_state_save_failed");
+  assert.equal(first.outcomes[1]?.reason, "calibration_state_save_failed");
+  assert.equal(s.requests.length, 1);
+  await s.service.execute();
+  assert.equal(saves, 3);
+  assert.equal(s.requests.length, 2);
 });
